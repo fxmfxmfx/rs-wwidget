@@ -27,6 +27,37 @@ Debian / Ubuntu:
 sudo apt install build-essential pkg-config libgtk-3-dev libgtk-layer-shell-dev python3 desktop-file-utils
 ```
 
+Gentoo:
+
+Для [GTK 3](https://packages.gentoo.org/packages/x11-libs/gtk%2B) включи USE-флаг
+`wayland`. Добавь следующую строку в `/etc/portage/package.use` либо в отдельный
+файл `/etc/portage/package.use/desktop-widgets`, если `package.use` — каталог:
+
+```text
+x11-libs/gtk+:3 wayland
+```
+
+Установи зависимости (от root или через `sudo`):
+
+```sh
+sudo emerge --ask --changed-use sys-devel/gcc virtual/pkgconfig dev-lang/python dev-vcs/git \
+    'x11-libs/gtk+:3' gui-libs/gtk-layer-shell dev-util/desktop-file-utils
+```
+
+Нужен именно GTK 3 из слота `:3`; [gtk-layer-shell](https://packages.gentoo.org/packages/gui-libs/gtk-layer-shell)
+устанавливается из основного дерева Gentoo. Отдельные `-dev` пакеты не нужны.
+Проверь, что доступны компилятор `cc`, Python 3.9+ и файлы для `pkg-config`:
+
+```sh
+cc --version
+python3 --version
+pkg-config --modversion gtk+-3.0 gtk-layer-shell-0
+```
+
+Затем выполни общие команды из раздела «Сборка и установка» ниже от обычного
+пользователя. Запускай виджеты внутри Wayland-сеанса с поддержкой layer-shell;
+порядок подключения автозапуска в MangoWM одинаков для всех дистрибутивов.
+
 Для оформления используется шрифт **MxPlus IBM VGA 8x16**. Он не включён
 в репозиторий. При его отсутствии Pango выберет доступную замену; семейство шрифта
 можно изменить в `widgets.c`.
