@@ -1,3 +1,5 @@
+<img width="1920" height="1080" alt="изображение" src="https://github.com/user-attachments/assets/56771da0-856d-4e21-9e18-79b13125cd8e" />
+
 # Gruvbox Desktop Widgets
 
 Небольшие виджеты рабочего стола для Wayland и MangoWM в цветах Gruvbox Material.
