@@ -1,8 +1,12 @@
+#define _POSIX_C_SOURCE 200809L
 #include "metrics.h"
+#include <errno.h>
+#include <fcntl.h>
 #include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 int month_days(int y, int m) {
     static const int days[] = {31,28,31,30,31,30,31,31,30,31,30,31};
     if (m < 1 || m > 12) return 0;
@@ -20,6 +24,36 @@ bool parse_cpu(const char *s, CpuSample *c) {
     c->total = 0;
     for (int i=0;i<8;i++) c->total += a[i];
     c->idle = a[3]+a[4]; /* Guest time is already included in user/nice. */
+    return true;
+}
+bool load_cpu_sample(const char *path, CpuSample *out) {
+    char line[256];
+    size_t used = 0;
+    bool complete = false;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    while (used < sizeof line - 1) {
+        ssize_t n = read(fd, line + used, sizeof line - 1 - used);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            return false;
+        }
+        if (n == 0) break;
+        char *newline = memchr(line + used, '\n', (size_t)n);
+        if (newline) {
+            used = (size_t)(newline - line);
+            complete = true;
+            break;
+        }
+        used += (size_t)n;
+    }
+    close(fd);
+    if (!complete) return false;
+    line[used] = '\0';
+    CpuSample sample;
+    if (!parse_cpu(line, &sample)) return false;
+    *out = sample;
     return true;
 }
 double cpu_percent(CpuSample old, CpuSample now) {

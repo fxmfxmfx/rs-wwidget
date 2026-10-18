@@ -10,6 +10,12 @@ int main(void) {
     assert(snap_axis(99999,1920,300,0)==1616);
     assert(snap_axis(1,1080,144,48)==48);
     assert(snap_axis(99999,200,274,48)==0); /* undersized output */
+    PanelDamage damage=layout_damage((PanelPosition){16,48},144,1920,1080);
+    assert(damage.x==15 && damage.y==47 && damage.width==302 && damage.height==146);
+    damage=layout_damage((PanelPosition){0,0},144,1920,1080);
+    assert(damage.x==0 && damage.y==0 && damage.width==301 && damage.height==145);
+    damage=layout_damage((PanelPosition){1616,928},144,1920,1080);
+    assert(damage.x==1615 && damage.y==927 && damage.width==302 && damage.height==146);
     PanelLayout layout;
     layout_defaults(&layout,1920,1080);
     assert(layout.pos[0].x==1584 && layout.pos[0].y==64);

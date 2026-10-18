@@ -5,15 +5,18 @@
 #include <pango/pangocairo.h>
 #include <sys/file.h>
 #include <sys/statvfs.h>
+#include <sys/resource.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include "metrics.h"
 #include "layout.h"
 #include "drag.h"
+#include "refresh.h"
 
 #define WIDTH 300
 #define HEIGHT 628
@@ -34,6 +37,7 @@ static CpuSample previous;
 static bool have_cpu, cpu_ready, memory_ready, disk_ready;
 static double cpu, ram_used, ram_total, disk_free, disk_used_fraction;
 static unsigned ticks;
+static gint64 started_at;
 static struct tm now;
 static const unsigned FG=0xd4be98, MUTED=0xa89984, ACCENT=0xe78a4e, GREEN=0xa9b665, BORDER=0x504945;
 
@@ -43,16 +47,25 @@ static void color(cairo_t *cr, unsigned hex, double alpha) {
 static void box(cairo_t *cr, double x, double y, double w, double h, unsigned hex, double alpha) {
     color(cr,hex,alpha); cairo_rectangle(cr,x,y,w,h); cairo_fill(cr);
 }
-static void text(cairo_t *cr, const char *s, double x, double y, int size, unsigned hex, int width, PangoAlignment align) {
-    PangoLayout *layout=pango_cairo_create_layout(cr);
-    PangoFontDescription *font=pango_font_description_new();
-    pango_font_description_set_family(font,"MxPlus IBM VGA 8x16");
-    pango_font_description_set_absolute_size(font,size*PANGO_SCALE);
-    pango_layout_set_font_description(layout,font);
+static PangoFontDescription *text_fonts[2];
+static void clear_render_resources(void) {
+    for(int i=0;i<2;i++) if(text_fonts[i]) {
+        pango_font_description_free(text_fonts[i]); text_fonts[i]=NULL;
+    }
+}
+static void text(cairo_t *cr,PangoLayout *layout,const char *s,double x,double y,int size,unsigned hex,int width,PangoAlignment align) {
+    int slot=size==64;
+    if(!text_fonts[slot]) {
+        text_fonts[slot]=pango_font_description_new();
+        pango_font_description_set_family(text_fonts[slot],"MxPlus IBM VGA 8x16");
+        pango_font_description_set_absolute_size(text_fonts[slot],size*PANGO_SCALE);
+    }
+    pango_layout_set_font_description(layout,text_fonts[slot]);
     pango_layout_set_text(layout,s,-1);
-    if (width>0) { pango_layout_set_width(layout,width*PANGO_SCALE); pango_layout_set_alignment(layout,align); }
+    /* Reset width/alignment as the same layout now serves several labels. */
+    pango_layout_set_width(layout,width>0?width*PANGO_SCALE:-1);
+    pango_layout_set_alignment(layout,align);
     color(cr,hex,1); cairo_move_to(cr,x,y); pango_cairo_show_layout(cr,layout);
-    pango_font_description_free(font); g_object_unref(layout);
 }
 static void card(cairo_t *cr, int y, int h) {
     box(cr,0,y,WIDTH,h,0x282828,.96);
@@ -66,16 +79,12 @@ static void bar(cairo_t *cr, int y, double fraction, unsigned hex) {
 }
 static void sample(void) {
     time_t timestamp=time(NULL); localtime_r(&timestamp,&now);
-    char *contents=NULL;
-    if (g_file_get_contents("/proc/stat",&contents,NULL,NULL)) {
-        CpuSample current;
-        if (parse_cpu(contents,&current)) {
-            if (have_cpu) { cpu=cpu_percent(previous,current); cpu_ready=true; }
-            previous=current; have_cpu=true;
-        } else cpu_ready=false;
-        g_free(contents);
+    CpuSample current;
+    if(load_cpu_sample("/proc/stat",&current)) {
+        if(have_cpu) { cpu=cpu_percent(previous,current); cpu_ready=true; }
+        previous=current;have_cpu=true;
     } else cpu_ready=false;
-    contents=NULL;
+    char *contents=NULL;
     memory_ready=g_file_get_contents("/proc/meminfo",&contents,NULL,NULL) && parse_memory(contents,&ram_used,&ram_total);
     g_free(contents);
     struct statvfs fs;
@@ -91,39 +100,41 @@ static void render_panel(cairo_t *cr,int index) {
     static const int offsets[]={0,160,450};
     char s[128];
     cairo_save(cr); cairo_translate(cr,0,-offsets[index]);
+    PangoLayout *text_layout=pango_cairo_create_layout(cr);
     card(cr,offsets[index],panel_heights[index]);
     if(index==0) {
-        text(cr,"СЕЙЧАС",24,20,16,MUTED,0,PANGO_ALIGN_LEFT);
+        text(cr,text_layout,"СЕЙЧАС",24,20,16,MUTED,0,PANGO_ALIGN_LEFT);
         strftime(s,sizeof s,"%H:%M",&now);
-        text(cr,s,24,42,64,FG,252,PANGO_ALIGN_CENTER);
+        text(cr,text_layout,s,24,42,64,FG,252,PANGO_ALIGN_CENTER);
         snprintf(s,sizeof s,"%s · %02d.%02d",weekdays[now.tm_wday],now.tm_mday,now.tm_mon+1);
-        text(cr,s,24,113,16,ACCENT,252,PANGO_ALIGN_CENTER);
+        text(cr,text_layout,s,24,113,16,ACCENT,252,PANGO_ALIGN_CENTER);
     } else if(index==1) {
-        text(cr,"КАЛЕНДАРЬ",24,180,16,MUTED,0,PANGO_ALIGN_LEFT);
+        text(cr,text_layout,"КАЛЕНДАРЬ",24,180,16,MUTED,0,PANGO_ALIGN_LEFT);
         snprintf(s,sizeof s,"%s %d",months[now.tm_mon],now.tm_year+1900);
-        text(cr,s,24,208,16,FG,252,PANGO_ALIGN_CENTER);
+        text(cr,text_layout,s,24,208,16,FG,252,PANGO_ALIGN_CENTER);
         static const char *days[]={"ПН","ВТ","СР","ЧТ","ПТ","СБ","ВС"};
-        for (int c=0;c<7;c++) text(cr,days[c],24+c*36,244,16,c>=5?ACCENT:MUTED,36,PANGO_ALIGN_CENTER);
+        for (int c=0;c<7;c++) text(cr,text_layout,days[c],24+c*36,244,16,c>=5?ACCENT:MUTED,36,PANGO_ALIGN_CENTER);
         int first=month_start(now.tm_year+1900,now.tm_mon+1);
         for (int day=1;day<=month_days(now.tm_year+1900,now.tm_mon+1);day++) {
             int cell=first+day-1, col=cell%7, row=cell/7, x=24+col*36, y=272+row*26;
             bool today=day==now.tm_mday;
             if (today) box(cr,x+4,y-3,28,22,ACCENT,1);
             snprintf(s,sizeof s,"%2d",day);
-            text(cr,s,x,y,16,today?0x282828:(col>=5?ACCENT:FG),36,PANGO_ALIGN_CENTER);
+            text(cr,text_layout,s,x,y,16,today?0x282828:(col>=5?ACCENT:FG),36,PANGO_ALIGN_CENTER);
         }
     } else {
-        text(cr,"СИСТЕМА",24,470,16,MUTED,0,PANGO_ALIGN_LEFT);
-        text(cr,"CPU",24,500,16,FG,0,PANGO_ALIGN_LEFT);
+        text(cr,text_layout,"СИСТЕМА",24,470,16,MUTED,0,PANGO_ALIGN_LEFT);
+        text(cr,text_layout,"CPU",24,500,16,FG,0,PANGO_ALIGN_LEFT);
         if (cpu_ready) snprintf(s,sizeof s,"%.0f%%",cpu); else g_strlcpy(s,"—",sizeof s);
-        text(cr,s,72,500,16,ACCENT,204,PANGO_ALIGN_RIGHT); bar(cr,524,cpu_ready?cpu/100.:0,ACCENT);
-        text(cr,"ОЗУ",24,540,16,FG,0,PANGO_ALIGN_LEFT);
+        text(cr,text_layout,s,72,500,16,ACCENT,204,PANGO_ALIGN_RIGHT); bar(cr,524,cpu_ready?cpu/100.:0,ACCENT);
+        text(cr,text_layout,"ОЗУ",24,540,16,FG,0,PANGO_ALIGN_LEFT);
         if (memory_ready) snprintf(s,sizeof s,"%.1f / %.1f GiB",ram_used,ram_total); else g_strlcpy(s,"—",sizeof s);
-        text(cr,s,72,540,16,FG,204,PANGO_ALIGN_RIGHT); bar(cr,564,memory_ready?ram_used/ram_total:0,GREEN);
-        text(cr,"ДИСК",24,580,16,FG,0,PANGO_ALIGN_LEFT);
+        text(cr,text_layout,s,72,540,16,FG,204,PANGO_ALIGN_RIGHT); bar(cr,564,memory_ready?ram_used/ram_total:0,GREEN);
+        text(cr,text_layout,"ДИСК",24,580,16,FG,0,PANGO_ALIGN_LEFT);
         if (disk_ready) snprintf(s,sizeof s,"%.0f GiB своб.",disk_free); else g_strlcpy(s,"—",sizeof s);
-        text(cr,s,72,580,16,FG,204,PANGO_ALIGN_RIGHT); bar(cr,604,disk_ready?disk_used_fraction:0,MUTED);
+        text(cr,text_layout,s,72,580,16,FG,204,PANGO_ALIGN_RIGHT); bar(cr,604,disk_ready?disk_used_fraction:0,MUTED);
     }
+    g_object_unref(text_layout);
     cairo_restore(cr);
 }
 static void clear_surface(cairo_t *cr) {
@@ -160,13 +171,16 @@ static void input_shape(GtkWidget *widget,gpointer data) {
 static void render_grid(cairo_t *cr,int width,int height) {
     box(cr,0,0,width,height,0x1b1b1b,.08);
     cairo_set_line_width(cr,1);
+    double x1,y1,x2,y2; cairo_clip_extents(cr,&x1,&y1,&x2,&y2);
+    int first_x=MAX(0,(int)floor((x1-1)/GRID_SIZE)*GRID_SIZE);
+    int first_y=MAX(0,(int)floor((y1-1)/GRID_SIZE)*GRID_SIZE);
     for(int major=0;major<2;major++) {
         color(cr,ACCENT,major?.32:.13);
-        for(int x=0;x<width;x+=GRID_SIZE) {
+        for(int x=first_x;x<width && x<=x2+1;x+=GRID_SIZE) {
             if((x%(GRID_SIZE*4)==0)!=major) continue;
             cairo_move_to(cr,x+.5,0); cairo_line_to(cr,x+.5,height);
         }
-        for(int y=0;y<height;y+=GRID_SIZE) {
+        for(int y=first_y;y<height && y<=y2+1;y+=GRID_SIZE) {
             if((y%(GRID_SIZE*4)==0)!=major) continue;
             cairo_move_to(cr,0,y+.5); cairo_line_to(cr,width,y+.5);
         }
@@ -269,11 +283,18 @@ static gboolean press(GtkWidget *widget,GdkEventButton *event,gpointer data) {
     write_status();
     return TRUE;
 }
+static void damage_preview(PanelPosition pos) {
+    if(!grid_window || drag.panel<0) return;
+    PanelDamage area=layout_damage(pos,panel_heights[drag.panel],monitor_width,monitor_height);
+    if(area.width>0 && area.height>0) gtk_widget_queue_draw_area(grid_window,area.x,area.y,area.width,area.height);
+}
 static void track_drag(double x,double y,int source) {
     DragPoint local=drag_local_point(drag_initial,x,y,source<0);
-    drag_preview=layout_drag(drag_initial,drag_start_x,drag_start_y,local.x,local.y,
-                             monitor_width,monitor_height,panel_heights[drag.panel]);
-    if(grid_window) gtk_widget_queue_draw(grid_window);
+    PanelPosition next=layout_drag(drag_initial,drag_start_x,drag_start_y,local.x,local.y,
+                                  monitor_width,monitor_height,panel_heights[drag.panel]);
+    if(next.x==drag_preview.x && next.y==drag_preview.y) return;
+    PanelPosition old=drag_preview; drag_preview=next;
+    damage_preview(old); damage_preview(next);
 }
 static gboolean motion(GtkWidget *widget,GdkEventMotion *event,gpointer data) {
     (void)widget;
@@ -330,15 +351,29 @@ static void write_status(void) {
         if(p) sscanf(p,"\nPss: %ld",&pss);
         g_free(contents);
     }
-    char *json=g_strdup_printf("{\"pid\":%ld,\"updated\":%ld,\"rss_kib\":%ld,\"pss_kib\":%ld,\"interval_seconds\":5,\"version\":3,\"drag_active\":%s}\n",(long)getpid(),(long)time(NULL),rss,pss,drag.panel>=0?"true":"false");
+    struct rusage usage={0};
+    getrusage(RUSAGE_SELF,&usage);
+    gint64 cpu_us=((gint64)usage.ru_utime.tv_sec+usage.ru_stime.tv_sec)*G_USEC_PER_SEC+usage.ru_utime.tv_usec+usage.ru_stime.tv_usec;
+    gint64 elapsed_us=g_get_monotonic_time()-started_at;
+    char *json=g_strdup_printf("{\"pid\":%ld,\"updated\":%ld,\"rss_kib\":%ld,\"pss_kib\":%ld,\"interval_seconds\":5,\"version\":4,\"drag_active\":%s,\"cpu_usec\":%"G_GINT64_FORMAT",\"elapsed_usec\":%"G_GINT64_FORMAT"}\n",(long)getpid(),(long)time(NULL),rss,pss,drag.panel>=0?"true":"false",cpu_us,elapsed_us);
     char *path=g_build_filename(state_dir,"status.json",NULL);
     g_file_set_contents(path,json,-1,NULL);
     g_free(path); g_free(json);
 }
+static DisplayState display_state(void) {
+    return (DisplayState){.time=now,.cpu_ready=cpu_ready,.memory_ready=memory_ready,.disk_ready=disk_ready,
+        .cpu=cpu,.ram_used=ram_used,.ram_total=ram_total,.disk_free=disk_free,.disk_used_fraction=disk_used_fraction};
+}
 static gboolean update(gpointer data) {
-    (void)data; sample();
-    for(int i=0;i<PANEL_COUNT;i++) gtk_widget_queue_draw(windows[i]);
-    if(grid_window) gtk_widget_queue_draw(grid_window);
+    (void)data;
+    DisplayState before=display_state(); sample();
+    DisplayState after=display_state();
+    unsigned changed=display_changes(&before,&after);
+    for(int i=0;i<PANEL_COUNT;i++) {
+        if(!(changed&(1u<<i))) continue;
+        if(i==drag.panel) damage_preview(drag_preview);
+        else gtk_widget_queue_draw(windows[i]);
+    }
     ++ticks;
     if(ticks==1 || ticks%12==0) write_status();
     return G_SOURCE_CONTINUE;
@@ -374,10 +409,12 @@ static int preview(const char *path, const char *wallpaper,gboolean grid) {
     }
     cairo_status_t result=cairo_surface_write_to_png(surface,path);
     cairo_destroy(cr); cairo_surface_destroy(surface);
+    clear_render_resources();
     if(result!=CAIRO_STATUS_SUCCESS) { fprintf(stderr,"%s\n",cairo_status_to_string(result)); return 1; }
     return 0;
 }
 int main(int argc, char **argv) {
+    started_at=g_get_monotonic_time();
     if(argc>=3 && strcmp(argv[1],"--preview")==0) return preview(argv[2],argc>3?argv[3]:NULL,FALSE);
     if(argc==3 && strcmp(argv[1],"--preview-grid")==0) return preview(argv[2],NULL,TRUE);
     if(argc>1) { fprintf(stderr,"Usage: desktop-widgets [--preview output.png [wallpaper.jpg] | --preview-grid output.png]\n"); return 2; }
@@ -425,6 +462,6 @@ int main(int argc, char **argv) {
     finish_drag(FALSE);
     for(int i=0;i<PANEL_COUNT;i++) gtk_widget_destroy(windows[i]);
     unlink(status_path); g_free(status_path); g_free(layout_path); g_free(state_dir);
-    g_clear_object(&monitor); close(lock_fd);
+    g_clear_object(&monitor); clear_render_resources(); close(lock_fd);
     return 0;
 }

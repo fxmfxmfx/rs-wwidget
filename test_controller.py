@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -71,7 +72,11 @@ class ControllerIntegrationTest(unittest.TestCase):
         self.assertIn('сохранённый замер', result.stdout.lower())
         self.assertIn('2.0 MiB', result.stdout)
         self.assertIn('1.0 MiB', result.stdout)
-        self.assertRegex(result.stdout, r'\b120 с назад\b')
+        match = re.search(r'; (\d+) с назад\.', result.stdout)
+        self.assertIsNotNone(match, result.stdout)
+        # The subprocess may cross a wall-clock second while starting.
+        self.assertGreaterEqual(int(match.group(1)), 120)
+        self.assertLessEqual(int(match.group(1)), int(time.time()) - now + 120)
         self.assertNotIn('widgets are running', result.stdout.lower())
 
     def test_remove_preserves_unrelated_configuration(self):

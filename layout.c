@@ -44,3 +44,10 @@ gboolean layout_save(const PanelLayout *l,const char *path,GError **error) {
     gboolean ok=g_key_file_save_to_file(file,path,error);
     g_key_file_unref(file); return ok;
 }
+
+PanelDamage layout_damage(PanelPosition pos,int panel_height,int screen_width,int screen_height) {
+    int x=MAX(0,pos.x-1),y=MAX(0,pos.y-1);
+    int right=MIN(screen_width,pos.x+PANEL_WIDTH+1);
+    int bottom=MIN(screen_height,pos.y+panel_height+1);
+    return (PanelDamage){x,y,MAX(0,right-x),MAX(0,bottom-y)};
+}
