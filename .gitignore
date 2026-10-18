@@ -1,0 +1,8 @@
+/desktop-widgets
+/desktop-widgets-build.*
+__pycache__/
+*.pyc
+*.bak
+*.core
+/core
+/.venv/
