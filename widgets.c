@@ -13,6 +13,7 @@
 #include <time.h>
 #include "metrics.h"
 #include "layout.h"
+#include "drag.h"
 
 #define WIDTH 300
 #define HEIGHT 628
@@ -21,7 +22,10 @@ static const char *weekdays[] = {"ВОСКРЕСЕНЬ","ПОНЕДЕЛЬНИК"
 static GtkWidget *windows[PANEL_COUNT], *grid_window;
 static GdkMonitor *monitor;
 static PanelLayout layout;
-static int monitor_width,monitor_height,drag_index=-1;
+static int monitor_width,monitor_height;
+static DragState drag={.panel=-1};
+static guint drag_watchdog_id;
+static void write_status(void);
 static PanelPosition drag_initial,drag_preview;
 static double drag_start_x,drag_start_y;
 static char *layout_path;
@@ -131,11 +135,17 @@ static gboolean draw(GtkWidget *widget,cairo_t *cr,gpointer data) {
     (void)widget;
     int index=GPOINTER_TO_INT(data);
     clear_surface(cr);
-    if(index!=drag_index) render_panel(cr,index);
+    if(index!=drag.panel) render_panel(cr,index);
     return FALSE;
 }
 static void input_shape(GtkWidget *widget,gpointer data) {
     int index=GPOINTER_TO_INT(data);
+    /* The grid catches fallback release/motion if the source loses its grab.
+       It exists only during a drag and never receives keyboard focus. */
+    if(index<0) {
+        gtk_widget_input_shape_combine_region(widget,NULL);
+        return;
+    }
     cairo_region_t *region=cairo_region_create();
     if(index>=0) {
         cairo_rectangle_int_t header={0,0,PANEL_WIDTH,42};
@@ -144,7 +154,7 @@ static void input_shape(GtkWidget *widget,gpointer data) {
         gdk_window_set_cursor(gtk_widget_get_window(widget),cursor);
         if(cursor) g_object_unref(cursor);
     }
-    gdk_window_input_shape_combine_region(gtk_widget_get_window(widget),region,0,0);
+    gtk_widget_input_shape_combine_region(widget,region);
     cairo_region_destroy(region);
 }
 static void render_grid(cairo_t *cr,int width,int height) {
@@ -167,11 +177,11 @@ static gboolean draw_grid(GtkWidget *widget,cairo_t *cr,gpointer data) {
     (void)data;
     clear_surface(cr);
     render_grid(cr,gtk_widget_get_allocated_width(widget),gtk_widget_get_allocated_height(widget));
-    if(drag_index>=0) {
+    if(drag.panel>=0) {
         cairo_save(cr); cairo_translate(cr,drag_preview.x,drag_preview.y);
-        render_panel(cr,drag_index);
+        render_panel(cr,drag.panel);
         color(cr,ACCENT,1); cairo_set_line_width(cr,2);
-        cairo_rectangle(cr,1,1,PANEL_WIDTH-2,panel_heights[drag_index]-2); cairo_stroke(cr);
+        cairo_rectangle(cr,1,1,PANEL_WIDTH-2,panel_heights[drag.panel]-2); cairo_stroke(cr);
         cairo_restore(cr);
     }
     return FALSE;
@@ -201,9 +211,10 @@ static void place_panel(int index) {
     gtk_widget_queue_draw(windows[index]);
 }
 static void finish_drag(gboolean commit) {
-    if(drag_index<0) return;
-    int index=drag_index;
-    drag_index=-1;
+    if(drag.panel<0) return;
+    int index=drag.panel;
+    drag_end(&drag);
+    if(drag_watchdog_id) { g_source_remove(drag_watchdog_id); drag_watchdog_id=0; }
     if(commit) {
         layout.pos[index]=drag_preview;
         GError *error=NULL;
@@ -212,40 +223,82 @@ static void finish_drag(gboolean commit) {
         }
     }
     place_panel(index);
-    if(grid_window) { gtk_widget_destroy(grid_window); grid_window=NULL; }
+    if(grid_window) {
+        GtkWidget *old=grid_window; grid_window=NULL; gtk_widget_destroy(old);
+    }
+    g_message("drag %s: panel %d",commit?"commit":"cancel",index);
+    write_status();
 }
+static gboolean drag_watchdog(gpointer data) {
+    (void)data;
+    if(drag_expired(&drag,g_get_monotonic_time())) {
+        drag_watchdog_id=0;
+        g_message("drag idle recovery: no pointer events for 30 seconds");
+        finish_drag(FALSE);
+        return G_SOURCE_REMOVE;
+    }
+    return G_SOURCE_CONTINUE;
+}
+static gboolean motion(GtkWidget *widget,GdkEventMotion *event,gpointer data);
+static gboolean release(GtkWidget *widget,GdkEventButton *event,gpointer data);
+static gboolean grab_broken(GtkWidget *widget,GdkEventGrabBroken *event,gpointer data);
+static gboolean source_unmapped(GtkWidget *widget,GdkEvent *event,gpointer data);
 static gboolean press(GtkWidget *widget,GdkEventButton *event,gpointer data) {
     (void)widget;
-    if(event->button!=1 || event->type!=GDK_BUTTON_PRESS || drag_index>=0) return FALSE;
-    drag_index=GPOINTER_TO_INT(data);
-    drag_initial=drag_preview=layout.pos[drag_index];
+    if(event->type!=GDK_BUTTON_PRESS) return FALSE;
+    DragAction action=drag_press(&drag,GPOINTER_TO_INT(data),event->button,g_get_monotonic_time());
+    if(action==DRAG_CANCEL) { finish_drag(FALSE); return TRUE; }
+    if(action!=DRAG_BEGIN) return FALSE;
+    drag_initial=drag_preview=layout.pos[drag.panel];
     drag_start_x=event->x; drag_start_y=event->y;
     grid_window=make_layer(GTK_LAYER_SHELL_LAYER_TOP,monitor_width,monitor_height);
+    gtk_widget_add_events(grid_window,GDK_BUTTON_PRESS_MASK|GDK_BUTTON_RELEASE_MASK|GDK_POINTER_MOTION_MASK);
+    gpointer grid_source=GINT_TO_POINTER(-1);
     g_signal_connect(grid_window,"draw",G_CALLBACK(draw_grid),NULL);
-    g_signal_connect(grid_window,"realize",G_CALLBACK(input_shape),GINT_TO_POINTER(-1));
+    g_signal_connect(grid_window,"realize",G_CALLBACK(input_shape),grid_source);
+    g_signal_connect(grid_window,"button-press-event",G_CALLBACK(press),grid_source);
+    g_signal_connect(grid_window,"motion-notify-event",G_CALLBACK(motion),grid_source);
+    g_signal_connect(grid_window,"button-release-event",G_CALLBACK(release),grid_source);
+    g_signal_connect(grid_window,"grab-broken-event",G_CALLBACK(grab_broken),grid_source);
+    g_signal_connect(grid_window,"unmap-event",G_CALLBACK(source_unmapped),grid_source);
+    drag_watchdog_id=g_timeout_add_seconds(1,drag_watchdog,NULL);
     gtk_widget_show_all(grid_window);
-    gtk_widget_queue_draw(windows[drag_index]);
+    /* Mapping can cancel the grab synchronously, so check before indexing. */
+    if(drag.panel>=0) gtk_widget_queue_draw(windows[drag.panel]);
+    g_message("drag begin: panel %d",drag.panel);
+    write_status();
     return TRUE;
 }
-static void track_drag(double x,double y) {
-    drag_preview=layout_drag(drag_initial,drag_start_x,drag_start_y,x,y,
-                             monitor_width,monitor_height,panel_heights[drag_index]);
-    gtk_widget_queue_draw(grid_window);
+static void track_drag(double x,double y,int source) {
+    DragPoint local=drag_local_point(drag_initial,x,y,source<0);
+    drag_preview=layout_drag(drag_initial,drag_start_x,drag_start_y,local.x,local.y,
+                             monitor_width,monitor_height,panel_heights[drag.panel]);
+    if(grid_window) gtk_widget_queue_draw(grid_window);
 }
 static gboolean motion(GtkWidget *widget,GdkEventMotion *event,gpointer data) {
     (void)widget;
-    if(drag_index!=GPOINTER_TO_INT(data)) return FALSE;
-    if(!(event->state&GDK_BUTTON1_MASK)) { finish_drag(FALSE); return TRUE; }
-    track_drag(event->x,event->y); return TRUE;
+    int source=GPOINTER_TO_INT(data);
+    DragAction action=drag_motion(&drag,source,(event->state&GDK_BUTTON1_MASK)!=0,g_get_monotonic_time());
+    if(action==DRAG_CANCEL) { finish_drag(FALSE); return TRUE; }
+    if(action!=DRAG_MOVE) return FALSE;
+    track_drag(event->x,event->y,source); return TRUE;
 }
 static gboolean release(GtkWidget *widget,GdkEventButton *event,gpointer data) {
     (void)widget;
-    if(event->button!=1 || drag_index!=GPOINTER_TO_INT(data)) return FALSE;
-    track_drag(event->x,event->y); finish_drag(TRUE); return TRUE;
+    int source=GPOINTER_TO_INT(data);
+    if(drag_release(&drag,source,event->button)!=DRAG_COMMIT) return FALSE;
+    track_drag(event->x,event->y,source); finish_drag(TRUE); return TRUE;
 }
 static gboolean grab_broken(GtkWidget *widget,GdkEventGrabBroken *event,gpointer data) {
+    (void)widget;
+    int source=GPOINTER_TO_INT(data);
+    if(!event->keyboard && drag.panel>=0 && (drag.panel==source || source<0)) finish_drag(FALSE);
+    return FALSE;
+}
+static gboolean source_unmapped(GtkWidget *widget,GdkEvent *event,gpointer data) {
     (void)widget; (void)event;
-    if(drag_index==GPOINTER_TO_INT(data)) finish_drag(FALSE);
+    int source=GPOINTER_TO_INT(data);
+    if(drag.panel>=0 && (drag.panel==source || source<0)) finish_drag(FALSE);
     return FALSE;
 }
 static void geometry_changed(GObject *object,GParamSpec *property,gpointer data) {
@@ -277,7 +330,7 @@ static void write_status(void) {
         if(p) sscanf(p,"\nPss: %ld",&pss);
         g_free(contents);
     }
-    char *json=g_strdup_printf("{\"pid\":%ld,\"updated\":%ld,\"rss_kib\":%ld,\"pss_kib\":%ld,\"interval_seconds\":5,\"version\":2}\n",(long)getpid(),(long)time(NULL),rss,pss);
+    char *json=g_strdup_printf("{\"pid\":%ld,\"updated\":%ld,\"rss_kib\":%ld,\"pss_kib\":%ld,\"interval_seconds\":5,\"version\":3,\"drag_active\":%s}\n",(long)getpid(),(long)time(NULL),rss,pss,drag.panel>=0?"true":"false");
     char *path=g_build_filename(state_dir,"status.json",NULL);
     g_file_set_contents(path,json,-1,NULL);
     g_free(path); g_free(json);
@@ -359,6 +412,7 @@ int main(int argc, char **argv) {
         g_signal_connect(windows[i],"motion-notify-event",G_CALLBACK(motion),index);
         g_signal_connect(windows[i],"button-release-event",G_CALLBACK(release),index);
         g_signal_connect(windows[i],"grab-broken-event",G_CALLBACK(grab_broken),index);
+        g_signal_connect(windows[i],"unmap-event",G_CALLBACK(source_unmapped),index);
         place_panel(i); gtk_widget_show_all(windows[i]);
     }
     g_signal_connect(monitor,"notify::geometry",G_CALLBACK(geometry_changed),NULL);
