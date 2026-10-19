@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check portable installation without touching the real desktop."""
+"""Check native installation in a temporary home directory."""
 import os
 from pathlib import Path
 import shutil
@@ -11,39 +11,61 @@ ROOT = Path(__file__).resolve().parent
 
 
 class InstallationTest(unittest.TestCase):
-    def test_installs_under_selected_home_and_can_be_removed(self):
+    def test_installs_native_binary_and_preserves_custom_config(self):
         self.assertTrue((ROOT / 'install.sh').is_file(), 'portable installer is missing')
+        self.assertTrue((ROOT / 'config.example.toml').is_file(), 'example config is missing')
+        self.assertTrue((ROOT / 'rs-wwidget').is_file(), 'build the native binary first')
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             project, home = root / 'source', root / 'user home'
             project.mkdir()
             home.mkdir()
-            for name in ('install.sh', 'desktop-widgets.py'):
+            for name in ('install.sh', 'config.example.toml'):
                 shutil.copy2(ROOT / name, project / name)
-            shutil.copy2('/usr/bin/sleep', project / 'desktop-widgets')
-            env = dict(os.environ, HOME=str(home), XDG_STATE_HOME=str(home / '.state'))
+            shutil.copy2(ROOT / 'rs-wwidget', project / 'rs-wwidget')
+            env = dict(os.environ, HOME=str(home),
+                       XDG_STATE_HOME=str(home / '.state'),
+                       XDG_CONFIG_HOME=str(home / '.config'))
+
             result = subprocess.run(['sh', str(project / 'install.sh')], env=env,
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
-            share = home / '.local/share/desktop-widgets'
-            self.assertTrue(os.access(share / 'desktop-widgets', os.X_OK))
-            controller = home / '.local/bin/desktop-widgets'
-            self.assertTrue(os.access(controller, os.X_OK))
+            share = home / '.local/share/rs-wwidget'
+            binary = home / '.local/bin/rs-wwidget'
+            self.assertTrue(os.access(binary, os.X_OK))
+            self.assertEqual(binary.read_bytes(), (project / 'rs-wwidget').read_bytes())
             config = (share / 'mango.conf').read_text()
-            self.assertIn(str(controller), config)
+            self.assertIn('layerrule=noanim:1,noblur:1,noshadow:1,layer_name:rs-wwidget\n', config)
+            self.assertIn(str(binary), config)
             self.assertNotIn(str(ROOT), config)
-            launcher = home / '.local/share/applications/desktop-widgets.desktop'
+            launcher = home / '.local/share/applications/rs-wwidget.desktop'
             self.assertTrue(launcher.is_file())
             check = subprocess.run(['desktop-file-validate', str(launcher)],
                                    capture_output=True, text=True)
             self.assertEqual(check.returncode, 0, check.stderr)
-            self.assertFalse((home / '.config/mango/config.conf').exists())
-            result = subprocess.run([str(controller), 'remove'], env=env,
+
+            user_config = home / '.config/rs-wwidget/config.toml'
+            self.assertEqual(user_config.read_text(), (project / 'config.example.toml').read_text())
+            user_config.write_text('monitor = "DP-1"\n[colors]\naccent = "#123456"\n')
+            result = subprocess.run(['sh', str(project / 'install.sh')], env=env,
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(user_config.read_text(), 'monitor = "DP-1"\n[colors]\naccent = "#123456"\n')
+            check_config = subprocess.run([str(binary), '--check-config'], env=env,
+                                          capture_output=True, text=True)
+            self.assertEqual(check_config.returncode, 0, check_config.stderr)
+
+            mango = home / '.config/mango/config.conf'
+            mango.parent.mkdir(parents=True, exist_ok=True)
+            mango.write_text('source = /elsewhere/custom.conf\n# preserve this\n')
+            result = subprocess.run([str(binary), 'remove'], env=env,
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertFalse(share.exists())
-            self.assertFalse(controller.exists())
+            self.assertFalse(binary.exists())
             self.assertFalse(launcher.exists())
+            self.assertTrue(user_config.exists())
+            self.assertEqual(mango.read_text(), 'source = /elsewhere/custom.conf\n# preserve this\n')
 
 
 if __name__ == '__main__':

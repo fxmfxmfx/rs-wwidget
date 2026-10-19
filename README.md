@@ -1,180 +1,188 @@
-<img width="1920" height="1080" alt="изображение" src="https://github.com/user-attachments/assets/56771da0-856d-4e21-9e18-79b13125cd8e" />
+# rs-wwidget
 
-# Gruvbox Desktop Widgets
+Desktop clock, calendar, and system metrics in the Gruvbox Material palette.
+Written in Rust, the application uses the Wayland layer-shell protocol directly.
+Cairo/Pango preserve the previous C version's rendering: dimensions, opacity,
+widget labels, and the **MxPlus IBM VGA 8x16** font. Install the font separately;
+Pango selects a fallback if it is unavailable.
 
-Небольшие виджеты рабочего стола для Wayland и MangoWM в цветах Gruvbox Material.
-Часы, календарь и монитор CPU, памяти и свободного места — в одном процессе на C.
+- One process and one event loop, with no application worker threads or GTK.
+  Pango creates one font-matching thread; the verified environment had 2 threads total.
+- CPU, memory, and home filesystem metrics are polled every 5 seconds.
+- Only changed panels are redrawn. The clock updates when the minute changes;
+  the calendar updates when the date changes.
+- Drag each panel by its title bar; positions snap to a 16 px grid.
+- Clicks pass through panels outside their title bars. The grid exists only while dragging.
 
-- Каждый виджет перетаскивается отдельно за заголовок или значок ≡.
-- Во время захвата появляется сетка 16 px; положение привязывается к ней и сохраняется.
-- Сетка создаётся только на время перетаскивания.
-- Виджеты находятся под окнами приложений и не занимают место в раскладке.
-- Показатели обновляются раз в 5 секунд; клики вне заголовков проходят сквозь виджеты.
+## Build and install
 
-## Требования
-
-Linux, компилятор C11, pkg-config, GTK 3, gtk-layer-shell, GLib, Python 3.9+
-и desktop-file-utils для проверки ярлыков. Для запуска нужен Wayland-композитор
-с поддержкой layer-shell. Интеграция автозапуска рассчитана на MangoWM 0.18+.
+Requires Linux, Rust **1.92+** with Cargo, `pkg-config`, and Cairo and Pango
+development headers. Checks also require a C compiler, Python 3, and
+`desktop-file-validate`. Running requires a Wayland compositor with wlr-layer-shell
+support, such as MangoWM. GTK and gtk-layer-shell are no longer required.
 
 Arch Linux / CachyOS:
 
 ```sh
-sudo pacman -S --needed base-devel pkgconf gtk3 gtk-layer-shell python desktop-file-utils
+sudo pacman -S --needed rust base-devel pkgconf cairo pango python desktop-file-utils
 ```
 
-Debian / Ubuntu:
+Debian / Ubuntu (install Rust 1.92+ separately, for example with rustup):
 
 ```sh
-sudo apt install build-essential pkg-config libgtk-3-dev libgtk-layer-shell-dev python3 desktop-file-utils
+sudo apt install build-essential pkg-config libcairo2-dev libpango1.0-dev python3 desktop-file-utils
 ```
 
-Gentoo:
-
-Для [GTK 3](https://packages.gentoo.org/packages/x11-libs/gtk%2B) включи USE-флаг
-`wayland`. Добавь следующую строку в `/etc/portage/package.use` либо в отдельный
-файл `/etc/portage/package.use/desktop-widgets`, если `package.use` — каталог:
-
-```text
-x11-libs/gtk+:3 wayland
-```
-
-Установи зависимости (от root или через `sudo`):
-
-```sh
-sudo emerge --ask --changed-use sys-devel/gcc virtual/pkgconfig dev-lang/python dev-vcs/git \
-    'x11-libs/gtk+:3' gui-libs/gtk-layer-shell dev-util/desktop-file-utils
-```
-
-Нужен именно GTK 3 из слота `:3`; [gtk-layer-shell](https://packages.gentoo.org/packages/gui-libs/gtk-layer-shell)
-устанавливается из основного дерева Gentoo. Отдельные `-dev` пакеты не нужны.
-Проверь, что доступны компилятор `cc`, Python 3.9+ и файлы для `pkg-config`:
-
-```sh
-cc --version
-python3 --version
-pkg-config --modversion gtk+-3.0 gtk-layer-shell-0
-```
-
-Затем выполни общие команды из раздела «Сборка и установка» ниже от обычного
-пользователя. Запускай виджеты внутри Wayland-сеанса с поддержкой layer-shell;
-порядок подключения автозапуска в MangoWM одинаков для всех дистрибутивов.
-
-Для оформления используется шрифт **MxPlus IBM VGA 8x16**. Он не включён
-в репозиторий. При его отсутствии Pango выберет доступную замену; семейство шрифта
-можно изменить в `widgets.c`.
-
-## Сборка и установка
-
-```sh
-git clone https://github.com/sorywet/gruvbox-desktop-widgets.git
-cd gruvbox-desktop-widgets
-./build.sh
-./install.sh
-~/.local/bin/desktop-widgets start
-```
-
-Сборка запускает проверки календаря, метрик, сетки, сохранения расположения,
-управления процессом и установки/удаления во временном домашнем каталоге.
-Установка выполняется без sudo в `~/.local`; она не запускает программу
-и не меняет настройки композитора автоматически. Файлы `mango.conf` и ярлык
-управляются установщиком и перезаписываются при обновлении; собственные правила
-добавляй в основной конфиг MangoWM.
-
-После обновления исходников:
+From the project directory:
 
 ```sh
 ./build.sh
 ./install.sh
-~/.local/bin/desktop-widgets restart
+~/.local/bin/rs-wwidget start
 ```
 
-Бинарный файл заменяется атомарно. Работающая версия продолжает работать до перезапуска.
+`build.sh` builds an optimized binary and runs Rust checks and install/control
+checks in a temporary home directory. The `rs-wwidget` binary is created in the
+project root. For development, use `cargo run -- --run`; release builds use less
+memory. Installation without sudo places the binary in `~/.local/bin`, the
+desktop entry in `~/.local/share/applications`, and the MangoWM include file in
+`~/.local/share/rs-wwidget/mango.conf`. The running version is replaced atomically;
+run `rs-wwidget restart` after an update.
 
-## Автозапуск в MangoWM
+## Color, language, and monitor configuration
 
-Добавь в `~/.config/mango/config.conf` строку, подставив **абсолютный путь**
-к своему домашнему каталогу:
+The path is `$XDG_CONFIG_HOME/rs-wwidget/config.toml`, defaulting to
+`~/.config/rs-wwidget/config.toml`. The installer creates it from
+[config.example.toml](config.example.toml), preserving any existing user file.
+The same defaults apply when no configuration file exists.
+
+[examples/config.toml](examples/config.toml) contains the current desktop preset: clock and system panels on `DP-1`, an opaque dark background, and warm yellow accents. Change `monitor` to your connector name before using it.
+
+```toml
+monitor = "auto"
+widgets = ["clock", "calendar", "system"]
+language = "en"
+background_opacity = 0.96
+font_family = "MxPlus IBM VGA 8x16"
+
+[colors]
+background = "#282828"
+foreground = "#d4be98"
+muted = "#a89984"
+accent = "#e78a4e"
+green = "#a9b665"
+border = "#504945"
+bar_background = "#3c3836"
+grid_background = "#1b1b1b"
+```
+
+`widgets` lists the enabled panels: `clock`, `calendar`, and `system`.
+Omitting it enables all three; `widgets = ["clock", "system"]` hides the calendar,
+and `widgets = []` hides every panel. Unknown names and duplicates are errors.
+The list does not change panel order or saved positions. Restart after editing.
+Previews and rendering benchmarks also respect this list.
+
+Set only the options you need. Colors use the `#RRGGBB` format; unknown options
+and invalid values are errors. `language` accepts `"en"` or `"ru"` and defaults
+to `"en"`; it changes widget text only. CLI output and logs are always in English.
+`background_opacity` sets opacity for panel backgrounds only: `0.0` is fully
+transparent and `1.0` is opaque. It defaults to `0.96`, as in the previous
+version. Text, borders, and metric bars remain opaque. The drag grid retains its
+existing opacity.
+`font_family` selects the font family; label and clock sizes stay the same. The
+[themes/rs-yambar.toml](themes/rs-yambar.toml) preset matches rs-yambar's dark
+palette with a light yellow accent and the `MxPlus IBM VGA 8x16 MidTilde` font.
+
+```sh
+rs-wwidget --list-monitors
+rs-wwidget --check-config
+rs-wwidget --config /path/to/config.toml start
+```
+
+To select a specific display, use a connector name from the list, for example
+`monitor = "DP-1"`. `auto` selects the first announced monitor; Wayland has no
+universal way to identify the primary display. If an explicitly selected
+monitor is unavailable at startup, the application reports an error. If the
+active display is disconnected, the application moves to an available display
+and returns when the selected one reconnects. Panel positions are constrained
+to the selected monitor's logical dimensions, accounting for its scale. Restart
+the application after changing the configuration.
+
+## Layer and MangoWM rules
+
+Panels use **`BOTTOM`**; the drag grid uses **`TOP`**.
+Both use the namespace **`rs-wwidget`**, called `layer_name` in MangoWM.
+The application does not request keyboard focus or reserve layout space.
 
 ```ini
-source = /home/USERNAME/.local/share/desktop-widgets/mango.conf
+layerrule=noanim:1,noblur:1,noshadow:1,layer_name:rs-wwidget
 ```
 
-Точную строку выводит установщик. Не добавляй её повторно при обновлении.
-Включённый конфиг запускает виджеты при входе и отключает для них анимацию и размытие.
+For autostart, add a line with the absolute path to `~/.config/mango/config.conf`:
 
-## Управление
-
-```sh
-~/.local/bin/desktop-widgets start
-~/.local/bin/desktop-widgets stop
-~/.local/bin/desktop-widgets restart
-~/.local/bin/desktop-widgets toggle
-~/.local/bin/desktop-widgets status
+```ini
+source = /home/USERNAME/.local/share/rs-wwidget/mango.conf
 ```
 
-В меню приложений также появится «Виджеты — показать / скрыть».
-Зажми левую кнопку мыши на заголовке, перемести виджет по сетке и отпусти.
-Если захват завис, повторный щелчок (в том числе правой кнопкой по сетке)
-отменяет перенос и возвращает виджет на прежнее место. Через 30 секунд без
-движения перенос также отменяется автоматически. Сетка обрабатывает отпускание
-мыши, если событие пришло ей вместо исходного виджета.
-Позиции сохраняются в `$XDG_STATE_HOME/desktop-widgets/layout.ini`
-(по умолчанию `~/.local/state/desktop-widgets/layout.ini`).
-При уменьшении разрешения координаты ограничиваются доступным экраном.
-Перенос между разными мониторами пока не предусмотрен.
+This included file already contains the autostart entry and layer rule; do not
+duplicate them. MangoWM 0.17 uses the `layerrule` and `noanim` syntax shown above.
+If rules are stored in `~/.config/mango/conf.d/60-rules.conf`, ensure the rule
+uses the actual namespace **`rs-wwidget`**. After changing it, run
+`mmsg dispatch reload_config` and `rs-wwidget restart` to recreate the surfaces.
 
-## Память
-
-`status` показывает RSS и PSS, измеренные самим процессом через `/proc/self/smaps_rollup`.
-RSS включает общие библиотеки целиком, PSS — пропорциональную долю общих страниц.
-Замер обновляется через 5 секунд после запуска, затем раз в минуту.
-Если процесс недоступен для проверки, команда показывает возраст сохранённого замера.
-Расход зависит от темы, шрифтов и композитора; постоянный расход сетки отсутствует.
-
-## Оптимизация и проверка внешнего вида
-
-Опрос показателей остаётся раз в 5 секунд. Перерисовываются только блоки,
-чьё видимое содержимое изменилось: часы при смене минуты, календарь при смене даты,
-системный блок при изменении показателей. Для текста внутри одного кадра используется
-общий объект Pango; полные изображения виджетов в памяти не кэшируются.
-При переносе обновляются только прежняя и новая области виджета, а движения внутри
-одной клетки сетки не вызывают перерисовку. Защита от зависшего захвата сохраняется.
+## Process control and state
 
 ```sh
+rs-wwidget start
+rs-wwidget stop
+rs-wwidget restart
+rs-wwidget toggle
+rs-wwidget status
+rs-wwidget remove
+```
+
+Running with no arguments or with `--run` stays in the foreground.
+The `start` command detaches the process and writes errors to `session.log`.
+An instance lock prevents duplicate launches. `remove` deletes installed files
+and state while preserving the user's `config.toml`.
+
+Panel positions are stored in `$XDG_STATE_HOME/rs-wwidget/layout.ini` (default:
+`~/.local/state/rs-wwidget/layout.ini`); the log and `status.json` are alongside
+it. Status includes RSS/PSS, thread count, monitor, drag activity, and accumulated
+CPU time. Measurements update after the first 5 seconds, then once per minute.
+A second click cancels a drag; after 30 seconds without movement, recovery handles
+a missed button release.
+
+When switching from the C version, stop it first:
+`~/.local/bin/desktop-widgets stop`, then remove the old autostart line from MangoWM.
+Then start `rs-wwidget`. If the new `layout.ini` does not exist, positions are
+read from the previous `desktop-widgets` directory. Old installed files are not
+removed automatically.
+
+## Checks and resource usage
+
+```sh
+cargo fmt --check
+cargo clippy --all-targets --locked -- -D warnings
 ./build.sh --benchmark
+./rs-wwidget --preview /tmp/widgets.png
+./rs-wwidget --preview /tmp/wallpaper-widgets.png /path/to/wallpaper.jpg
+./rs-wwidget --preview-grid /tmp/grid.png
 ```
 
-Проверки сравнивают пиксели с сохранённым рендерером версии 3 при масштабе 100% и 200%,
-включая повторную отрисовку частей сетки. Бенчмарк измеряет процессорное время
-рендерера при одинаковых данных; он не заменяет замер программы в Wayland-сеансе.
-В `status.json` поля `cpu_usec` и `elapsed_usec` позволяют измерять CPU по разности
-двух снимков; для сравнения снимки должны относиться к одному PID.
+Preview does not require Wayland. PNG and JPEG wallpapers are supported.
+Checks compare pixels with the saved C renderer at 1× and 2× scale, including a
+sequence of partial grid frames. C is used only as a test reference and is not
+included in the application.
 
-## Удаление
-
-Выполни из терминала своей графической сессии:
+An additional check exercises real protocols in a separate headless MangoWM
+(requires `mango` and `grim`):
 
 ```sh
-~/.local/bin/desktop-widgets remove
+cargo build --example test_pointer
+python3 tests/wayland_smoke.py
 ```
 
-Команда остановит виджеты, удалит их файлы, состояние, ярлык и добавленную строку
-`source` из конфига MangoWM. Остальные настройки сохраняются. Копия исходников
-в каталоге Git остаётся на месте.
-
-## Проверка без графической сессии
-
-```sh
-./build.sh
-./desktop-widgets --preview /tmp/widgets.png
-./desktop-widgets --preview-grid /tmp/widgets-grid.png
-```
-
-Изображения являются предпросмотром рендерера. Автоматические проверки не заменяют
-проверку перетаскивания мышью в живом Wayland-сеансе.
-Начало и завершение переноса пишутся в `~/.local/state/desktop-widgets/session.log`
-(либо в каталог под `$XDG_STATE_HOME`). В `status.json` поле `drag_active` показывает,
-была ли активна сетка во время замера.
-
-Техническая справка: [gtk-layer-shell](https://wmww.github.io/gtk-layer-shell/).
+It checks two monitors, dragging, cancellation, 30-second recovery, thread count,
+and clean shutdown. It does not use the current graphical session. For architecture
+and measurements, see [docs/optimization.md](docs/optimization.md).

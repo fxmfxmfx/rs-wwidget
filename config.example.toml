@@ -1,0 +1,20 @@
+# Copy to ~/.config/rs-wwidget/config.toml (or $XDG_CONFIG_HOME/rs-wwidget/).
+# Run rs-wwidget --list-monitors to see connector names. Restart after editing.
+monitor = "auto"
+# Enabled panels: clock, calendar, system. Use [] to hide all. Restart after editing.
+widgets = ["clock", "calendar", "system"]
+# Widget labels only. CLI messages and logs are always English.
+language = "en"
+# Panel background only: 0.0 = fully transparent, 1.0 = opaque.
+background_opacity = 0.96
+font_family = "MxPlus IBM VGA 8x16"
+
+[colors]
+background = "#282828"
+foreground = "#d4be98"
+muted = "#a89984"
+accent = "#e78a4e"
+green = "#a9b665"
+border = "#504945"
+bar_background = "#3c3836"
+grid_background = "#1b1b1b"

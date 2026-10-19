@@ -1,0 +1,19 @@
+# Theme matching ~/.config/rs-yambar/config.toml.
+# Copy to ~/.config/rs-wwidget/config.toml and set your monitor.
+monitor = "auto"
+widgets = ["clock", "calendar", "system"]
+# Widget labels only. CLI messages and logs are always English.
+language = "en"
+background_opacity = 1.0
+font_family = "MxPlus IBM VGA 8x16 MidTilde"
+
+[colors]
+background = "#141310"
+foreground = "#e5e4dc"
+muted = "#a39d7b"
+accent = "#e6da94"
+green = "#e6da94"
+border = "#141310"
+# A muted track between the panel background and secondary text.
+bar_background = "#38362b"
+grid_background = "#141310"

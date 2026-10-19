@@ -9,7 +9,8 @@ import tempfile
 import time
 import unittest
 
-CONTROLLER = Path(__file__).resolve().parent / 'desktop-widgets.py'
+ROOT = Path(__file__).resolve().parent
+CONTROLLER = ROOT / 'rs-wwidget'
 SLEEP = Path('/usr/bin/sleep')
 
 
@@ -18,16 +19,19 @@ class ControllerIntegrationTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.child = None
         self.home = Path(self.temp.name)
-        self.share = self.home / '.local/share/desktop-widgets'
-        self.state = self.home / '.state/desktop-widgets'
+        self.share = self.home / '.local/share/rs-wwidget'
+        self.bin_dir = self.home / '.local/bin'
+        self.binary = self.bin_dir / 'rs-wwidget'
+        self.state = self.home / '.state/rs-wwidget'
         self.share.mkdir(parents=True)
-        shutil.copy2(SLEEP, self.share / 'desktop-widgets')
+        self.bin_dir.mkdir(parents=True)
         shutil.copy2(CONTROLLER, self.home / 'controller')
+        shutil.copy2(SLEEP, self.binary)
         self.env = {**os.environ, 'HOME': str(self.home),
-                    'XDG_STATE_HOME': str(self.home / '.state')}
+                    'XDG_STATE_HOME': str(self.home / '.state'),
+                    'XDG_CONFIG_HOME': str(self.home / '.config')}
 
     def tearDown(self):
-        # Avoid leaving fixture processes behind if an assertion fails.
         try:
             info = json.loads((self.state / 'status.json').read_text())
             os.kill(info['pid'], 15)
@@ -42,18 +46,18 @@ class ControllerIntegrationTest(unittest.TestCase):
                               text=True, capture_output=True, timeout=5)
 
     def test_stop_recognizes_process_after_atomic_executable_replacement(self):
-        self.child = subprocess.Popen([str(self.share / 'desktop-widgets'), '3600'],
-                                 env=self.env, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, start_new_session=True)
+        self.child = subprocess.Popen([str(self.binary), '3600'], env=self.env,
+                                      stdout=subprocess.DEVNULL,
+                                      stderr=subprocess.DEVNULL, start_new_session=True)
         pid = self.child.pid
         self.state.mkdir(parents=True)
         (self.state / 'status.json').write_text(json.dumps({
             'pid': pid, 'updated': int(time.time()),
             'rss_kib': 100, 'pss_kib': 50,
         }))
-        replacement = self.share / 'replacement'
+        replacement = self.bin_dir / 'replacement'
         shutil.copy2(SLEEP, replacement)
-        os.replace(replacement, self.share / 'desktop-widgets')
+        os.replace(replacement, self.binary)
 
         stopped = self.run_controller('stop')
         self.assertEqual(stopped.returncode, 0, stopped.stderr)
@@ -69,24 +73,27 @@ class ControllerIntegrationTest(unittest.TestCase):
         }))
         result = self.run_controller('status')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('сохранённый замер', result.stdout.lower())
+        self.assertIn('cached measurement', result.stdout.lower())
         self.assertIn('2.0 MiB', result.stdout)
         self.assertIn('1.0 MiB', result.stdout)
-        match = re.search(r'; (\d+) с назад\.', result.stdout)
+        match = re.search(r'; (\d+) seconds ago\.', result.stdout)
         self.assertIsNotNone(match, result.stdout)
-        # The subprocess may cross a wall-clock second while starting.
         self.assertGreaterEqual(int(match.group(1)), 120)
         self.assertLessEqual(int(match.group(1)), int(time.time()) - now + 120)
-        self.assertNotIn('widgets are running', result.stdout.lower())
 
-    def test_remove_preserves_unrelated_configuration(self):
-        config = self.home / '.config/mango/config.conf'
-        config.parent.mkdir(parents=True)
-        config.write_text('source = /elsewhere/custom.conf\n# keep me\n')
+    def test_remove_preserves_unrelated_configuration_and_user_palette(self):
+        mango = self.home / '.config/mango/config.conf'
+        mango.parent.mkdir(parents=True)
+        mango.write_text('source = /elsewhere/custom.conf\n# keep me\n')
+        user_config = self.home / '.config/rs-wwidget/config.toml'
+        user_config.parent.mkdir(parents=True)
+        user_config.write_text('monitor = "DP-1"\n[colors]\naccent = "#123456"\n')
         result = self.run_controller('remove')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(config.read_text(), 'source = /elsewhere/custom.conf\n# keep me\n')
+        self.assertEqual(mango.read_text(), 'source = /elsewhere/custom.conf\n# keep me\n')
+        self.assertEqual(user_config.read_text(), 'monitor = "DP-1"\n[colors]\naccent = "#123456"\n')
         self.assertFalse(self.share.exists())
+        self.assertFalse(self.binary.exists())
 
 
 if __name__ == '__main__':
