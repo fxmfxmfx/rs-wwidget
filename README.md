@@ -1,5 +1,5 @@
 <img width="337" height="687" alt="image" src="https://github.com/user-attachments/assets/6d5160ff-ea69-4b98-965d-3cab66c34e12" />
-<img width="559" height="63" alt="image" src="https://github.com/user-attachments/assets/1ad060f2-719d-4a95-942c-70b730658cc4" />
+<img width="600" height="61" alt="image" src="https://github.com/user-attachments/assets/a48fc88c-e0b9-4ead-93d3-4813d8c3be8f" />
 
 # rs-wwidget
 
