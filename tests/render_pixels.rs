@@ -130,6 +130,50 @@ fn panels_match_frozen_legacy_pixels() {
 }
 
 #[test]
+fn plugin_content_is_clipped_and_scales_with_its_panel() {
+    use rs_wwidget::plugin::{Frame, Row};
+    let frame = Frame {
+        version: 1,
+        title: "Очень длинный заголовок ".repeat(4),
+        rows: vec![
+            Row {
+                label: "Label ".repeat(50),
+                value: "Значение ".repeat(40),
+                fraction: Some(0.5),
+                history: vec![0.0, 0.5, 1.0, 0.25],
+            };
+            12
+        ],
+    };
+    for scale in [1, 2] {
+        let mut surface = ImageSurface::create(Format::ARgb32, 320 * scale, 198 * scale).unwrap();
+        surface.set_device_scale(scale as f64, scale as f64);
+        let cr = Context::new(&surface).unwrap();
+        cr.translate(10.0, 10.0);
+        Renderer::new(Palette::DEFAULT, 1.0)
+            .plugin(&cr, 178, &frame)
+            .unwrap();
+        drop(cr);
+        let pixels = png(&mut surface);
+        let width = 320 * scale as usize;
+        for y in 0..198 * scale as usize {
+            for x in 0..width {
+                let alpha = pixels[(y * width + x) * 4 + 3];
+                if x < 10 * scale as usize
+                    || x >= 310 * scale as usize
+                    || y < 10 * scale as usize
+                    || y >= 188 * scale as usize
+                {
+                    assert_eq!(alpha, 0, "plugin painted outside its panel at {x},{y}");
+                } else {
+                    assert_eq!(alpha, 255, "opaque plugin panel has a gap at {x},{y}");
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn grid_and_panel_match_frozen_legacy_pixels() {
     for scale in 1..=2 {
         let mut surface = ImageSurface::create(Format::ARgb32, 960 * scale, 640 * scale).unwrap();

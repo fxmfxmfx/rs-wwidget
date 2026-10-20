@@ -1,10 +1,11 @@
 use rs_wwidget::{
     Result,
     config::{self, atomic_write},
+    instance::{self, without_deleted},
 };
 use std::{
     fs,
-    os::fd::AsRawFd,
+    os::fd::{AsRawFd, FromRawFd},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::PathBuf,
     process::{Command, Stdio},
@@ -17,21 +18,22 @@ fn status_path() -> PathBuf {
 fn status() -> Result<serde_json::Value> {
     Ok(serde_json::from_slice(&fs::read(status_path())?)?)
 }
-fn without_deleted(path: &std::path::Path) -> PathBuf {
-    use std::os::unix::ffi::{OsStrExt, OsStringExt};
-    let bytes = path.as_os_str().as_bytes();
-    PathBuf::from(std::ffi::OsString::from_vec(
-        bytes.strip_suffix(b" (deleted)").unwrap_or(bytes).to_vec(),
-    ))
-}
 pub fn running_pid() -> Option<i32> {
+    let lock_path = config::state_dir().join("lock");
+    if let Some(pid) = instance::owner_pid(&lock_path) {
+        return Some(pid);
+    }
     let pid = i32::try_from(status().ok()?.get("pid")?.as_i64()?)
         .ok()
         .filter(|p| *p > 1)?;
     let exe = without_deleted(&fs::read_link(format!("/proc/{pid}/exe")).ok()?);
     let current = without_deleted(&std::env::current_exe().ok()?);
     let installed = config::home().join(".local/bin/rs-wwidget");
-    if exe == current || exe == installed {
+    if (exe == current
+        || exe == installed
+        || exe.file_name().is_some_and(|name| name == "rs-wwidget"))
+        && instance::owns_lock(pid, &lock_path)
+    {
         Some(pid)
     } else {
         None
@@ -39,15 +41,36 @@ pub fn running_pid() -> Option<i32> {
 }
 pub fn stop() -> Result<()> {
     let Some(pid) = running_pid() else {
+        if instance::locked(&config::state_dir().join("lock"))? {
+            return Err("An rs-wwidget instance holds the lock, but its owner is not visible in this process session. Run restart from your desktop terminal.".into());
+        }
         println!("Widgets are not running in this session.");
         return Ok(());
     };
-    if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+    // Pin the process before revalidating ownership, so PID reuse cannot redirect SIGTERM.
+    let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+    if descriptor < 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    let process = unsafe { fs::File::from_raw_fd(descriptor as i32) };
+    if running_pid() != Some(pid) {
+        return Err("Instance ownership changed before shutdown; retry the command.".into());
+    }
+    if unsafe {
+        libc::syscall(
+            libc::SYS_pidfd_send_signal,
+            process.as_raw_fd(),
+            libc::SIGTERM,
+            std::ptr::null::<libc::siginfo_t>(),
+            0,
+        )
+    } != 0
+    {
         return Err(std::io::Error::last_os_error().into());
     }
     let deadline = Instant::now() + Duration::from_secs(3);
     while Instant::now() < deadline {
-        if running_pid() != Some(pid) {
+        if !instance::locked(&config::state_dir().join("lock"))? && running_pid() != Some(pid) {
             println!("Widgets stopped.");
             return Ok(());
         }
@@ -59,6 +82,9 @@ pub fn start(config_path: Option<&std::path::Path>) -> Result<()> {
     if running_pid().is_some() {
         println!("Widgets are already running.");
         return Ok(());
+    }
+    if instance::locked(&config::state_dir().join("lock"))? {
+        return Err("An rs-wwidget instance already holds the lock, but its owner cannot be inspected. Run restart from your desktop terminal; session.log was kept.".into());
     }
     let state = config::state_dir();
     fs::DirBuilder::new()
@@ -101,9 +127,14 @@ pub fn start(config_path: Option<&std::path::Path>) -> Result<()> {
                 println!("Widgets are already running.");
                 return Ok(());
             }
+            if instance::locked(&state.join("lock"))? {
+                return Err("Another rs-wwidget instance holds the lock; it may have been started from a different checkout or process session.".into());
+            }
             return Err("Process exited before creating widgets; see session.log".into());
         }
-        if running_pid() == Some(child.id() as i32) {
+        if running_pid() == Some(child.id() as i32)
+            && status().ok().and_then(|info| info["pid"].as_i64()) == Some(child.id() as i64)
+        {
             println!("Widgets started.");
             return Ok(());
         }

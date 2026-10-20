@@ -16,20 +16,38 @@ controller = home / '.local/bin/rs-wwidget'
 applications = home / '.local/share/applications'
 if not (source / 'rs-wwidget').is_file():
     sys.exit('Run ./build.sh before ./install.sh')
+if not all((source / name).is_file() for name in (
+        'widgets/widget-provider', 'widgets/music/music', 'widgets/cpu/cpu-monitor')):
+    sys.exit('Run ./build.sh to build the bundled widgets before ./install.sh')
 for directory in (share, controller.parent, applications):
     directory.mkdir(parents=True, exist_ok=True)
 
-def install_file(source, target):
+def install_file(source, target, mode=0o755):
     descriptor, name = tempfile.mkstemp(prefix='.install-', dir=target.parent)
     os.close(descriptor)
     try:
         shutil.copyfile(source, name)
-        os.chmod(name, 0o755)
+        os.chmod(name, mode)
         os.replace(name, target)
     finally:
         Path(name).unlink(missing_ok=True)
 
 install_file(source / 'rs-wwidget', controller)
+for asset in sorted((source / 'widgets').rglob('*')):
+    if not asset.is_file() or '-build.' in asset.name:
+        continue
+    target = share / 'widgets' / asset.relative_to(source / 'widgets')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() and (asset.name == 'settings.toml' or asset.suffix == '.txt'):
+        continue
+    install_file(asset, target, 0o755 if os.access(asset, os.X_OK) else 0o644)
+# Retired bundled packages are removed on upgrade; user packages under config stay separate.
+for retired in ('agenda', 'summary', 'timer'):
+    target = share / 'widgets' / retired
+    if target.is_symlink():
+        target.unlink()
+    elif target.is_dir():
+        shutil.rmtree(target)
 config_root = Path(os.environ.get('XDG_CONFIG_HOME') or home / '.config')
 if not config_root.is_absolute():
     config_root = home / '.config'

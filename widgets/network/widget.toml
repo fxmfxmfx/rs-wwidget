@@ -1,0 +1,6 @@
+version = 1
+id = "network"
+command = ["../widget-provider", "network", "--package", "{widget_dir}"]
+height = 246
+restart_seconds = 30
+timeout_seconds = 90

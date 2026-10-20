@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Small single-threaded Gruvbox Wayland desktop widgets"
+default-run = "rs-wwidget"
 
 [dependencies]
 cairo-rs = { version = "0.22", default-features = false, features = ["png"] }

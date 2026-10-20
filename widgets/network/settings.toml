@@ -1,0 +1,7 @@
+# "auto" prefers the /proc default route, then the first non-loopback interface.
+interface = "auto"
+poll_seconds = 1
+# RX/TX bar normalization; history stores combined traffic against this scale.
+scale_mib_per_second = 10
+# Optional fixture root (expects net/dev and net/route beneath it).
+# proc_root = "/tmp/network-fixture"

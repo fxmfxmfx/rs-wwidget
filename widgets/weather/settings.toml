@@ -1,0 +1,3 @@
+# Optional WGS84 coordinates. Set both to override IP auto-location.
+# latitude = YOUR_LATITUDE
+# longitude = YOUR_LONGITUDE

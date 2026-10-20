@@ -1,7 +1,10 @@
 # Copy to ~/.config/rs-wwidget/config.toml (or $XDG_CONFIG_HOME/rs-wwidget/).
 # Run rs-wwidget --list-monitors to see connector names. Restart after editing.
 monitor = "auto"
-# Enabled panels: clock, calendar, system. Use [] to hide all. Restart after editing.
+# Built-in: clock, calendar, system. Optional: cpu, network, temperatures,
+# music, weather. Add names here to enable them.
+# Widget-specific settings live in widgets/<name>/settings.toml.
+# Use [] to hide all. Restart after editing.
 widgets = ["clock", "calendar", "system"]
 # Widget labels only. CLI messages and logs are always English.
 language = "en"

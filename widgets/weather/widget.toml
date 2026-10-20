@@ -1,0 +1,6 @@
+version = 1
+id = "weather"
+command = ["../widget-provider", "weather", "--package", "{widget_dir}"]
+height = 246
+restart_seconds = 30
+timeout_seconds = 60

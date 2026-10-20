@@ -17,6 +17,47 @@ the process has **2 threads** including the main thread. The thread is created
 by [Pango's Fontconfig backend](https://github.com/GNOME/pango/blob/main/pango/pangofc-fontmap.c)
 for font matching; disabling Fontconfig's periodic checks does not remove it.
 
+## Optional widget processes
+
+The default `clock`, `calendar` and `system` path does not scan package folders
+or start provider processes. Optional packages are selected by name in `widgets`;
+only selected manifests are loaded. Their sizes, executable arguments and
+restart policy live in `widgets/<name>/widget.toml`, with source-specific
+settings beside them. The shipped native examples are `cpu`, `network`,
+`temperatures`, `music` and `weather`; all are data displays without clickable
+controls. See [the package API](widget-api.md) and [provider measurements](../widgets/README.md).
+
+Enabled providers supply bounded JSON lines through nonblocking pipes integrated
+into the existing Wayland `poll` loop. Each iteration reads at most 64 KiB per
+provider, and only changed frames dirty a panel. Identical frames reset the
+liveness timeout without redrawing. A failed provider is killed as a process
+group, reaped, and restarted after its package delay. Provider processes and SHM
+panel buffers exist only while enabled. Music's GIO threads live in its own
+process, and weather's bounded `curl` calls run only during enabled refreshes.
+
+The main process adds no worker threads or Python interpreter. The compatibility
+Python CPU entry point replaces itself with the native executable via `exec`;
+the optional SDK example retains an interpreter and is intended for authors.
+
+## Instance ownership and restart
+
+After taking the flock, the process writes PID, Linux process start ticks and
+executable path into the same lock file. Controllers validate the birth time,
+executable and actual lock descriptor before signaling the owner. Metrics in
+`status.json` are independent of this record. A legacy process launched from a
+checkout is accepted only when its application executable holds the matching
+flock. A Linux pidfd pins the target across the final ownership check and signal,
+preventing PID reuse from redirecting shutdown to another process. This supports
+theme-triggered restarts across installed and checkout paths.
+
+Stop waits for release of the actual flock rather than status-file removal,
+which previously allowed a replacement to exit against the still-held lock.
+An inaccessible lock owner produces a specific error without truncating the
+session log. This bookkeeping adds one small startup write and no idle work.
+Controller regression tests cover missing status, delayed lock release, stale
+start times and log preservation; the headless Wayland check covers a legacy
+checkout instance restarted by the installed controller.
+
 ## Buffers and redraws
 
 - Each panel has its own SHM surface. Buffers are allocated as needed, with no

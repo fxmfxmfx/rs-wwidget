@@ -305,6 +305,125 @@ impl Renderer {
         Ok(())
     }
 
+    /// Shared presentation keeps plugins independent of Cairo, fonts and Wayland.
+    pub fn plugin(
+        &self,
+        cr: &Context,
+        height: i32,
+        frame: &crate::plugin::Frame,
+    ) -> Result<(), cairo::Error> {
+        cr.save()?;
+        cr.rectangle(0.0, 0.0, WIDTH, height as f64);
+        cr.clip();
+        self.card(cr, 0, height);
+        let layout = create_layout(cr);
+        layout.set_single_paragraph_mode(true);
+        layout.set_ellipsize(pango::EllipsizeMode::End);
+        layout.set_height(-1);
+        self.text(
+            cr,
+            &layout,
+            &frame.title,
+            24.0,
+            20.0,
+            16,
+            self.palette.muted,
+            224,
+            Alignment::Left,
+        );
+        let mut y = 50.0;
+        for row in &frame.rows {
+            let row_height = 26.0
+                + if row.fraction.is_some() { 8.0 } else { 0.0 }
+                + if row.history.is_empty() { 0.0 } else { 34.0 };
+            if y + row_height > height as f64 - 12.0 {
+                break;
+            }
+            if row.label.is_empty() {
+                self.text(
+                    cr,
+                    &layout,
+                    &row.value,
+                    24.0,
+                    y,
+                    16,
+                    self.palette.foreground,
+                    252,
+                    Alignment::Left,
+                );
+            } else {
+                self.text(
+                    cr,
+                    &layout,
+                    &row.label,
+                    24.0,
+                    y,
+                    16,
+                    self.palette.foreground,
+                    112,
+                    Alignment::Left,
+                );
+                self.text(
+                    cr,
+                    &layout,
+                    &row.value,
+                    140.0,
+                    y,
+                    16,
+                    self.palette.accent,
+                    136,
+                    Alignment::Right,
+                );
+            }
+            y += 26.0;
+            if let Some(fraction) = row.fraction {
+                self.bar(cr, y - 2.0, fraction, self.palette.accent);
+                y += 8.0;
+            }
+            if !row.history.is_empty() {
+                // Keep the chart on the card background, with a quiet fixed
+                // 0..100% grid rather than an opaque stripe behind the data.
+                set_color(cr, self.palette.muted, 0.16);
+                cr.set_line_width(1.0);
+                for offset in [0.5, 12.5, 25.5] {
+                    cr.move_to(24.5, y + offset);
+                    cr.line_to(275.5, y + offset);
+                }
+                cr.stroke()?;
+                let denominator = row.history.len().saturating_sub(1).max(1) as f64;
+                cr.move_to(24.5, y + 25.5);
+                for (i, value) in row.history.iter().enumerate() {
+                    cr.line_to(
+                        24.5 + i as f64 * 251.0 / denominator,
+                        y + 25.5 - value * 25.0,
+                    );
+                }
+                cr.line_to(
+                    24.5 + (row.history.len() - 1) as f64 * 251.0 / denominator,
+                    y + 25.5,
+                );
+                cr.close_path();
+                set_color(cr, self.palette.accent, 0.12);
+                cr.fill()?;
+                set_color(cr, self.palette.accent, 1.0);
+                cr.set_line_width(1.25);
+                for (i, value) in row.history.iter().enumerate() {
+                    let x = 24.5 + i as f64 * 251.0 / denominator;
+                    let py = y + 25.5 - value * 25.0;
+                    if i == 0 {
+                        cr.move_to(x, py);
+                    } else {
+                        cr.line_to(x, py);
+                    }
+                }
+                cr.stroke()?;
+                y += 34.0;
+            }
+        }
+        cr.restore()?;
+        Ok(())
+    }
+
     fn card(&self, cr: &Context, y: i32, h: i32) {
         self.box_fill(
             cr,

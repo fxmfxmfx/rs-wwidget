@@ -18,11 +18,20 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
         .map(image::open)
         .transpose()?
         .map(|i| i.to_rgba8());
-    let (w, h) = image
-        .as_ref()
-        .map_or(if grid { (1920, 1080) } else { (300, 628) }, |i| {
-            (i.width() as i32, i.height() as i32)
-        });
+    let plugin_height: i32 = cfg
+        .plugins
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| p.height + 16)
+        .sum();
+    let (w, h) = image.as_ref().map_or(
+        if grid {
+            (1920, 1080)
+        } else {
+            (300, 628 + plugin_height)
+        },
+        |i| (i.width() as i32, i.height() as i32),
+    );
     let surface = ImageSurface::create(Format::ARgb32, w, h)?;
     let cr = Context::new(&surface)?;
     if let Some(image) = image {
@@ -44,7 +53,7 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
         .with_font_family(&cfg.font_family)
         .with_language(cfg.language);
     let state = Sampler::default().sample();
-    let mut demo = Layout::defaults(w, h);
+    let mut demo = Layout::defaults(w, h).with_plugins(&cfg, w, h);
     if grid {
         demo.pos[1] = layout::dragged(demo.pos[1], (0.0, 0.0), (-480.0, -32.0), w, h, 1);
         renderer.grid(&cr, w, h)?;
@@ -62,6 +71,23 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
         cr.translate(x as f64, y as f64);
         renderer.panel(&cr, i, &state)?;
         cr.restore()?;
+    }
+    let mut next_y = 644;
+    for (i, plugin) in cfg.plugins.iter().enumerate().filter(|(_, p)| p.enabled) {
+        let position = if grid {
+            demo.position(i + 3)
+        } else {
+            layout::Position { x: 0, y: next_y }
+        };
+        cr.save()?;
+        cr.translate(position.x as f64, position.y as f64);
+        renderer.plugin(
+            &cr,
+            plugin.height,
+            &rs_wwidget::plugin::Frame::placeholder(&plugin.id, "Preview"),
+        )?;
+        cr.restore()?;
+        next_y += plugin.height + 16;
     }
     surface.write_to_png(&mut File::create(path)?)?;
     Ok(())
@@ -131,7 +157,7 @@ fn run() -> Result<()> {
     match action {
         "--help" | "-h" => {
             println!(
-                "rs-wwidget [--config PATH] [start|stop|restart|toggle|status|remove]\n  --run                       Run in the foreground (default)\n  --list-monitors             List Wayland connector names and logical sizes\n  --check-config              Validate config and exit\n  --print-default-config      Print current default palette\n  --preview OUTPUT [WALLPAPER] Render PNG without Wayland (PNG/JPEG wallpaper)\n  --preview-grid OUTPUT       Render drag grid preview\n  --benchmark                 Headless rendering CPU benchmark"
+                "rs-wwidget [--config PATH] [start|stop|restart|toggle|status|remove]\n  --run                       Run in the foreground (default)\n  --list-monitors             List Wayland connector names and logical sizes\n  --list-widgets              List installed widget names\n  --check-config              Validate config and exit\n  --print-default-config      Print current default palette\n  --preview OUTPUT [WALLPAPER] Render PNG without Wayland (PNG/JPEG wallpaper)\n  --preview-grid OUTPUT       Render drag grid preview\n  --benchmark                 Headless rendering CPU benchmark"
             );
             return Ok(());
         }
@@ -147,6 +173,12 @@ fn run() -> Result<()> {
     let path = explicit
         .clone()
         .unwrap_or_else(|| config::config_dir().join("config.toml"));
+    if action == "--list-widgets" && args.len() == 1 {
+        for name in rs_wwidget::registry::available(Some(&path)) {
+            println!("{name}");
+        }
+        return Ok(());
+    }
     let cfg = Config::load(&path, explicit.is_some())?;
     match action {
         "--run" if args.len() <= 1 => wayland::run(cfg, false),

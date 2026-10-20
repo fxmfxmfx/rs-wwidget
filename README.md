@@ -20,7 +20,8 @@ Pango selects a fallback if it is unavailable.
 ## Build and install
 
 Requires Linux, Rust **1.92+** with Cargo, `pkg-config`, and Cairo and Pango
-development headers. Checks also require a C compiler, Python 3, and
+development headers. Building the native examples requires a C compiler and
+GIO development headers (`gio-2.0` via `pkg-config`); checks also require Python 3 and
 `desktop-file-validate`. Running requires a Wayland compositor with wlr-layer-shell
 support, such as MangoWM. GTK and gtk-layer-shell are no longer required.
 
@@ -33,7 +34,7 @@ sudo pacman -S --needed rust base-devel pkgconf cairo pango python desktop-file-
 Debian / Ubuntu (install Rust 1.92+ separately, for example with rustup):
 
 ```sh
-sudo apt install build-essential pkg-config libcairo2-dev libpango1.0-dev python3 desktop-file-utils
+sudo apt install build-essential pkg-config libcairo2-dev libpango1.0-dev libglib2.0-dev python3 desktop-file-utils
 ```
 
 From the project directory:
@@ -51,6 +52,12 @@ memory. Installation without sudo places the binary in `~/.local/bin`, the
 desktop entry in `~/.local/share/applications`, and the MangoWM include file in
 `~/.local/share/rs-wwidget/mango.conf`. The running version is replaced atomically;
 run `rs-wwidget restart` after an update.
+
+If a restart reports `Process exited before creating widgets` and the session
+log is empty, another instance may still hold the widget lock. This can happen
+when the running process was launched from a checkout while the restart command
+uses the installed binary; current process detection may not recognize the
+checkout executable. Confirm that the old process has exited before retrying.
 
 ## Color, language, and monitor configuration
 
@@ -79,11 +86,55 @@ bar_background = "#3c3836"
 grid_background = "#1b1b1b"
 ```
 
-`widgets` lists the enabled panels: `clock`, `calendar`, and `system`.
+`widgets` lists enabled built-in and installed widget names.
 Omitting it enables all three; `widgets = ["clock", "system"]` hides the calendar,
 and `widgets = []` hides every panel. Unknown names and duplicates are errors.
 The list does not change panel order or saved positions. Restart after editing.
 Previews and rendering benchmarks also respect this list.
+
+## Optional and custom widgets
+
+Enable optional widgets by adding their names to the same list:
+
+```toml
+widgets = ["clock", "system", "network", "temperatures", "music", "weather"]
+```
+
+| Name | Content |
+| --- | --- |
+| `cpu` | CPU utilization and two-minute history, load, uptime |
+| `network` | RX/TX speed, active interface and traffic history |
+| `temperatures` | CPU/GPU maximum temperatures and fan speeds |
+| `music` | MPRIS artist, track and playback state |
+| `weather` | IP-based approximate location, weather and rain probability |
+
+The [bundled packages](widgets/README.md) are also examples for authors. Each
+package owns its `widget.toml` metadata and optional `settings.toml`; the main
+configuration only needs names. Use `rs-wwidget --list-widgets` to list available
+packages. Installation places them in `~/.local/share/rs-wwidget/widgets` and
+preserves their settings and text data on updates. Development uses `widgets/`
+next to the executable. See the [widget API](docs/widget-api.md) for custom
+packages, the JSON protocol and the optional [Python SDK](sdk/python/rs_wwidget.py).
+
+The shipped providers are native programs. Weather additionally requires `curl`
+and queries ipwho.is and Open-Meteo only while enabled; explicit coordinates can
+override IP location in its settings. Music uses GIO/MPRIS without `playerctl`.
+Python remains supported for user plugins, with its interpreter's memory cost.
+
+Optional widgets are disabled by default. Disabled packages create no processes,
+runtime buffers, surfaces or scheduled work and are not scanned on the default path.
+The host keeps its single event loop and adds no threads or runtime dependencies.
+Enabled plugins pay for their own process and panel buffers. Host RSS/PSS in
+`status.json` does not include child processes; count those separately.
+
+Panels support text, label/value rows, progress bars and small history graphs.
+The host handles themes, scaling, dragging and saved positions by plugin ID.
+Slow or broken plugins are stopped and retried without blocking the event loop.
+Config checking, monitor listing, previews and benchmarks never launch plugins;
+previews show placeholder panels. Restart after editing the configuration.
+Legacy `[[plugins]]` definitions remain supported for existing configurations.
+
+## Additional appearance settings
 
 Set only the options you need. Colors use the `#RRGGBB` format; unknown options
 and invalid values are errors. `language` accepts `"en"` or `"ru"` and defaults
@@ -149,6 +200,16 @@ The `start` command detaches the process and writes errors to `session.log`.
 An instance lock prevents duplicate launches. `remove` deletes installed files
 and state while preserving the user's `config.toml`.
 
+The lock records its owner's PID, process start time and executable path.
+Process control verifies the actual held flock, so the installed command can
+restart a checkout-launched process even after an atomic binary update or loss
+of `status.json`. It uses Linux pidfds to keep a reused PID from receiving the
+shutdown signal. Shutdown waits for the lock to be released before replacement.
+When a process is outside the caller's visible process session, the controller
+reports that explicitly and keeps the previous log; run the command from the
+same desktop terminal. This also applies to `desktop-theme` integrations that
+apply colors and then call `rs-wwidget restart`.
+
 Panel positions are stored in `$XDG_STATE_HOME/rs-wwidget/layout.ini` (default:
 `~/.local/state/rs-wwidget/layout.ini`); the log and `status.json` are alongside
 it. Status includes RSS/PSS, thread count, monitor, drag activity, and accumulated
@@ -175,8 +236,8 @@ cargo clippy --all-targets --locked -- -D warnings
 
 Preview does not require Wayland. PNG and JPEG wallpapers are supported.
 Checks compare pixels with the saved C renderer at 1× and 2× scale, including a
-sequence of partial grid frames. C is used only as a test reference and is not
-included in the application.
+sequence of partial grid frames. That reference renderer is test-only. The host
+is Rust; the separate native CPU and music providers are written in C.
 
 An additional check exercises real protocols in a separate headless MangoWM
 (requires `mango` and `grim`):

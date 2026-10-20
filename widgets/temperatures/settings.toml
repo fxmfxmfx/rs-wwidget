@@ -1,0 +1,3 @@
+poll_seconds = 5
+# Optional fixture root (expects class/hwmon beneath it).
+# sysfs_root = "/tmp/sysfs-fixture"

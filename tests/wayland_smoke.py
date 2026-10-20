@@ -170,13 +170,32 @@ def main():
                 assert info['monitor'] == target, info
                 print('rust:', json.dumps(memory(client_pid)), flush=True)
                 assert info['threads'] <= 2, info
+                # An installed controller must restart a checkout-launched instance,
+                # including an old instance whose flock file has no owner record.
+                installed = home / '.local/bin/rs-wwidget'
+                installed.parent.mkdir(parents=True)
+                shutil.copy2(BINARY, installed)
+                (home / '.state/rs-wwidget/lock').write_text('')
+                cfg.write_text(cfg.read_text().replace('#234567', '#345678'))
+                old_pid = client_pid
+                restarted = subprocess.run([str(installed), '--config', str(cfg), 'restart'],
+                                           env=env, capture_output=True, text=True, timeout=10)
+                assert restarted.returncode == 0, restarted.stderr
+                client_pid = wait_for(lambda: status()['pid'] if status()['pid'] != old_pid else None)
+                # Metrics may be missing; the live flock owner remains discoverable.
+                status_path.unlink()
+                old_pid = client_pid
+                restarted = subprocess.run([str(installed), '--config', str(cfg), 'restart'],
+                                           env=env, capture_output=True, text=True, timeout=10)
+                assert restarted.returncode == 0, restarted.stderr
+                client_pid = wait_for(lambda: status()['pid'] if status()['pid'] != old_pid else None)
                 cli('--config', str(cfg), '--run')  # single-instance lock
                 assert status()['pid'] == client_pid
                 x = int((max(0, w - 300 - 40) + 8) // 16 * 16)
                 subprocess.run(['grim', '-o', target, str(root / 'live.png')],
                                env=env, check=True, capture_output=True)
                 panel_sample = x + 260, 144
-                expected_panel_pixel = (0x23, 0x45, 0x67, 0xff)
+                expected_panel_pixel = (0x34, 0x56, 0x78, 0xff)
                 assert png_pixel(root / 'live.png', *panel_sample) == expected_panel_pixel, \
                     'baseline panel sample must be opaque and distinguishable from the background'
 
@@ -244,6 +263,7 @@ def main():
                 assert not status_path.exists()
                 client_pid = None
                 print('PASS: named output, main + Pango thread, single instance, live SHM render, '
+                      'checkout-to-installed theme restart, missing-status restart, '
                       'drag commit/cancel/idle recovery, clean stop', flush=True)
             finally:
                 if client_pid:

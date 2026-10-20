@@ -3,8 +3,9 @@ use cairo::{Context, Format, ImageSurface};
 use rs_wwidget::{
     Result,
     config::{self, Config},
-    layout::{self, HEIGHTS, Layout, Position, WIDTH},
+    layout::{self, Layout, Position, WIDTH},
     metrics::{self, Display, Sampler},
+    plugin::Runtime,
     render::{self, Renderer},
 };
 use std::{
@@ -185,6 +186,7 @@ struct RetiringOverlay {
 
 struct App {
     config: Config,
+    plugins: Vec<(usize, Runtime)>,
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
     shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
@@ -212,7 +214,15 @@ struct App {
 
 impl App {
     fn new(config: Config) -> Self {
+        let plugins = config
+            .plugins
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.enabled)
+            .map(|(i, p)| (i + 3, Runtime::new(p.clone())))
+            .collect();
         Self {
+            plugins,
             renderer: Renderer::new(config.colors, config.background_opacity)
                 .with_font_family(&config.font_family)
                 .with_language(config.language),
@@ -267,9 +277,11 @@ impl App {
         layer.set_anchor(Anchor::Top | Anchor::Left);
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        let size = panel.map_or((self.geometry.0, self.geometry.1), |i| (WIDTH, HEIGHTS[i]));
+        let size = panel.map_or((self.geometry.0, self.geometry.1), |i| {
+            (WIDTH, self.config.panel_height(i))
+        });
         layer.set_size(size.0 as u32, size.1 as u32);
-        let pos = panel.map_or(Position::default(), |i| self.layout.pos[i]);
+        let pos = panel.map_or(Position::default(), |i| self.layout.position(i));
         layer.set_margin(pos.y, 0, 0, pos.x);
         let scale = self.geometry.2;
         wl.set_buffer_scale(scale);
@@ -346,7 +358,7 @@ impl App {
         if self.selected == Some(chosen)
             && geometry == self.geometry
             && self.surfaces.iter().filter(|s| s.panel.is_some()).count()
-                == self.config.widgets.len()
+                == self.config.enabled_panel_count()
             && !initial
         {
             return Ok(());
@@ -358,7 +370,7 @@ impl App {
         self.geometry = geometry;
         self.selected = Some(chosen);
         if initial {
-            self.layout = Layout::defaults(w, h);
+            self.layout = Layout::defaults(w, h).with_plugins(&self.config, w, h);
             let path = self.state_dir.join("layout.ini");
             if !path.exists() {
                 let old = config::xdg("XDG_STATE_HOME", ".local/state")
@@ -369,7 +381,7 @@ impl App {
         } else {
             self.layout.constrain(w, h);
         }
-        for i in 0..3 {
+        for i in 0..self.config.panel_count() {
             if self.config.panel_enabled(i) {
                 self.create_surface(Some(i), qh);
             }
@@ -408,7 +420,7 @@ impl App {
     fn finish_drag(&mut self, commit: bool) {
         let Some(drag) = self.drag.take() else { return };
         if commit {
-            self.layout.pos[drag.panel] = drag.preview;
+            self.layout.set_position(drag.panel, drag.preview);
             if let Err(e) = self.layout.save(&self.state_dir.join("layout.ini")) {
                 eprintln!("Cannot save layout: {e}");
             }
@@ -428,7 +440,7 @@ impl App {
             .iter_mut()
             .find(|s| s.panel == Some(drag.panel))
         {
-            let p = self.layout.pos[drag.panel];
+            let p = self.layout.position(drag.panel);
             s.layer.set_margin(p.y, 0, 0, p.x);
             s.dirty = true;
         }
@@ -456,7 +468,7 @@ impl App {
         else {
             return;
         };
-        let p = self.layout.pos[panel];
+        let p = self.layout.position(panel);
         self.drag = Some(Drag {
             panel,
             initial: p,
@@ -486,13 +498,13 @@ impl App {
             point.1 -= drag.initial.y as f64;
         }
         drag.last_activity = Instant::now();
-        let next = layout::dragged(
+        let next = layout::dragged_height(
             drag.initial,
             drag.start,
             point,
             self.geometry.0,
             self.geometry.1,
-            drag.panel,
+            self.config.panel_height(drag.panel),
         );
         if next != drag.preview {
             drag.preview = next;
@@ -509,7 +521,7 @@ impl App {
         self.display = after;
         for s in &mut self.surfaces {
             let i = s.panel.or_else(|| self.drag.map(|d| d.panel));
-            if i.is_some_and(|i| changed[i]) {
+            if i.is_some_and(|i| changed.get(i).copied().unwrap_or(false)) {
                 s.dirty = true;
             }
         }
@@ -550,8 +562,18 @@ impl App {
             let damage = if s.panel.is_none() && !b.fresh {
                 b.preview.zip(self.drag).map(|(old, drag)| {
                     [
-                        layout::damage(old, drag.panel, s.size.0, s.size.1),
-                        layout::damage(drag.preview, drag.panel, s.size.0, s.size.1),
+                        layout::damage_height(
+                            old,
+                            self.config.panel_height(drag.panel),
+                            s.size.0,
+                            s.size.1,
+                        ),
+                        layout::damage_height(
+                            drag.preview,
+                            self.config.panel_height(drag.panel),
+                            s.size.0,
+                            s.size.1,
+                        ),
                     ]
                 })
             } else {
@@ -569,14 +591,28 @@ impl App {
                     .drag
                     .is_none_or(|d| d.panel != panel || !d.source_hidden)
                 {
-                    self.renderer.panel(&cr, panel, &self.display)?;
+                    draw_panel(
+                        &self.renderer,
+                        &cr,
+                        panel,
+                        &self.display,
+                        &self.config,
+                        &self.plugins,
+                    )?;
                 }
             } else {
                 self.renderer.grid(&cr, s.size.0, s.size.1)?;
                 if let Some(d) = self.drag {
                     cr.save()?;
                     cr.translate(d.preview.x as f64, d.preview.y as f64);
-                    self.renderer.panel(&cr, d.panel, &self.display)?;
+                    draw_panel(
+                        &self.renderer,
+                        &cr,
+                        d.panel,
+                        &self.display,
+                        &self.config,
+                        &self.plugins,
+                    )?;
                     let c = self.config.colors.accent;
                     cr.set_source_rgb(
                         ((c >> 16) & 255) as f64 / 255.0,
@@ -584,7 +620,12 @@ impl App {
                         (c & 255) as f64 / 255.0,
                     );
                     cr.set_line_width(2.0);
-                    cr.rectangle(1.0, 1.0, (WIDTH - 2) as f64, (HEIGHTS[d.panel] - 2) as f64);
+                    cr.rectangle(
+                        1.0,
+                        1.0,
+                        (WIDTH - 2) as f64,
+                        (self.config.panel_height(d.panel) - 2) as f64,
+                    );
                     cr.stroke()?;
                     cr.restore()?;
                     b.preview = Some(d.preview);
@@ -954,7 +995,7 @@ pub fn run(config: Config, list: bool) -> Result<()> {
         .recursive(true)
         .mode(0o700)
         .create(&app.state_dir)?;
-    let lock = std::fs::OpenOptions::new()
+    let mut lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .read(true)
@@ -968,6 +1009,7 @@ pub fn run(config: Config, list: bool) -> Result<()> {
         }
         return Err(e.into());
     }
+    rs_wwidget::instance::record(&mut lock)?;
     // SA_RESTART is deliberately off: SIGTERM interrupts the idle poll immediately.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
@@ -979,6 +1021,7 @@ pub fn run(config: Config, list: bool) -> Result<()> {
     app.display = app.sampler.sample();
     app.sync_outputs(&qh, true)?;
     let mut next_sample = Instant::now() + Duration::from_secs(5);
+    let mut poll_fds = Vec::new();
     let result = (|| -> Result<()> {
         while app.running && !STOP.load(Ordering::Relaxed) {
             queue.dispatch_pending(&mut app)?;
@@ -994,6 +1037,15 @@ pub fn run(config: Config, list: bool) -> Result<()> {
             {
                 app.finish_drag(false);
             }
+            for (panel, plugin) in &mut app.plugins {
+                if plugin.tick(now) {
+                    for surface in &mut app.surfaces {
+                        if surface.panel.or_else(|| app.drag.map(|d| d.panel)) == Some(*panel) {
+                            surface.dirty = true;
+                        }
+                    }
+                }
+            }
             app.redraw(&qh)?;
             let Some(guard) = queue.prepare_read() else {
                 continue;
@@ -1007,9 +1059,12 @@ pub fn run(config: Config, list: bool) -> Result<()> {
                     return Err(e.into());
                 }
             }
-            let deadline = app.drag.map_or(next_sample, |d| {
+            let mut deadline = app.drag.map_or(next_sample, |d| {
                 next_sample.min(d.last_activity + Duration::from_secs(30))
             });
+            for (_, plugin) in &app.plugins {
+                deadline = deadline.min(plugin.deadline());
+            }
             let timeout = deadline
                 .saturating_duration_since(Instant::now())
                 .as_millis()
@@ -1019,7 +1074,30 @@ pub fn run(config: Config, list: bool) -> Result<()> {
                 events,
                 revents: 0,
             };
-            let n = unsafe { libc::poll(&mut fd, 1, timeout) };
+            let n = if app.plugins.is_empty() {
+                unsafe { libc::poll(&mut fd, 1, timeout) }
+            } else {
+                poll_fds.clear();
+                poll_fds.push(fd);
+                for (_, plugin) in &app.plugins {
+                    if let Some(plugin_fd) = plugin.poll_fd() {
+                        poll_fds.push(libc::pollfd {
+                            fd: plugin_fd,
+                            events: libc::POLLIN,
+                            revents: 0,
+                        });
+                    }
+                }
+                let n = unsafe {
+                    libc::poll(
+                        poll_fds.as_mut_ptr(),
+                        poll_fds.len() as libc::nfds_t,
+                        timeout,
+                    )
+                };
+                fd = poll_fds[0];
+                n
+            };
             if n < 0 {
                 let e = std::io::Error::last_os_error();
                 drop(guard);
@@ -1043,10 +1121,27 @@ pub fn run(config: Config, list: bool) -> Result<()> {
         }
         Ok(())
     })();
+    app.plugins.clear();
     app.finish_drag(false);
     app.surfaces.clear();
     let _ = conn.flush();
     let _ = std::fs::remove_file(app.state_dir.join("status.json"));
     drop(lock);
     result
+}
+
+fn draw_panel(
+    renderer: &Renderer,
+    cr: &Context,
+    panel: usize,
+    display: &Display,
+    config: &Config,
+    plugins: &[(usize, Runtime)],
+) -> Result<()> {
+    if panel < 3 {
+        renderer.panel(cr, panel, display)?;
+    } else if let Some((_, plugin)) = plugins.iter().find(|(i, _)| *i == panel) {
+        renderer.plugin(cr, config.panel_height(panel), plugin.frame())?;
+    }
+    Ok(())
 }

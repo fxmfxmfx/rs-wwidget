@@ -1,0 +1,6 @@
+version = 1
+id = "music"
+command = ["./music"]
+height = 178
+restart_seconds = 30
+timeout_seconds = 60

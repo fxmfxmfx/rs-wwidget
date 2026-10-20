@@ -1,0 +1,6 @@
+version = 1
+id = "temperatures"
+command = ["../widget-provider", "temperatures", "--package", "{widget_dir}"]
+height = 274
+restart_seconds = 30
+timeout_seconds = 90

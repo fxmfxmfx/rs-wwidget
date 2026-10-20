@@ -9,3 +9,11 @@ __pycache__/
 
 /rs-wwidget
 /target/
+/examples/widgets/cpu-monitor
+/examples/widgets/cpu-monitor-build.*
+/widgets/widget-provider
+/widgets/widget-provider-build.*
+/widgets/cpu/cpu-monitor
+/widgets/cpu/cpu-monitor-build.*
+/widgets/music/music
+/widgets/music/music-build.*

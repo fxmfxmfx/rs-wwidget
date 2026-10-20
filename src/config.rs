@@ -7,24 +7,6 @@ use std::{
 
 pub const DEFAULT_FONT_FAMILY: &str = "MxPlus IBM VGA 8x16";
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum Widget {
-    Clock,
-    Calendar,
-    System,
-}
-
-impl Widget {
-    pub const fn index(self) -> usize {
-        match self {
-            Self::Clock => 0,
-            Self::Calendar => 1,
-            Self::System => 2,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub background: u32,
@@ -40,22 +22,49 @@ pub struct Palette {
 #[derive(Debug)]
 pub struct Config {
     pub monitor: String,
-    pub widgets: Vec<Widget>,
+    pub widgets: Vec<String>,
     pub language: Language,
     pub background_opacity: f64,
     pub font_family: String,
     pub colors: Palette,
+    pub plugins: Vec<PluginConfig>,
+}
+
+/// Executables are opt-in; disabled definitions never create a runtime or surface.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct PluginConfig {
+    pub id: String,
+    pub command: Vec<String>,
+    pub enabled: bool,
+    pub height: i32,
+    pub restart_seconds: u64,
+    pub timeout_seconds: u64,
+}
+
+impl Default for PluginConfig {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            command: Vec::new(),
+            enabled: false,
+            height: 178,
+            restart_seconds: 30,
+            timeout_seconds: 60,
+        }
+    }
 }
 
 #[derive(Deserialize, Default)]
 #[serde(default, deny_unknown_fields)]
 struct FileConfig {
     monitor: Option<String>,
-    widgets: Option<Vec<Widget>>,
+    widgets: Option<Vec<String>>,
     language: Option<Language>,
     background_opacity: Option<f64>,
     font_family: Option<String>,
     colors: Colors,
+    plugins: Vec<PluginConfig>,
 }
 
 #[derive(Deserialize, Default)]
@@ -75,30 +84,87 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             monitor: "auto".into(),
-            widgets: vec![Widget::Clock, Widget::Calendar, Widget::System],
+            widgets: vec![
+                "clock".to_string(),
+                "calendar".to_string(),
+                "system".to_string(),
+            ],
             language: Language::En,
             background_opacity: 0.96,
             font_family: DEFAULT_FONT_FAMILY.into(),
             colors: Palette::DEFAULT,
+            plugins: Vec::new(),
         }
     }
 }
 
 impl Config {
     pub fn panel_enabled(&self, index: usize) -> bool {
-        self.widgets.iter().any(|widget| widget.index() == index)
+        if index < 3 {
+            self.widgets
+                .iter()
+                .any(|widget| widget == crate::layout::NAMES[index])
+        } else {
+            self.plugins.get(index - 3).is_some_and(|p| p.enabled)
+        }
     }
 
     pub fn parse(text: &str) -> crate::Result<Self> {
+        Self::parse_at(text, None)
+    }
+
+    pub(crate) fn parse_at(text: &str, path: Option<&Path>) -> crate::Result<Self> {
         let raw: FileConfig = toml::from_str(text)?;
         let mut cfg = Self {
             language: raw.language.unwrap_or_default(),
+            plugins: raw.plugins,
             ..Self::default()
         };
+        for (i, plugin) in cfg.plugins.iter().enumerate() {
+            if plugin.id.is_empty()
+                || plugin.id.len() > 64
+                || !plugin
+                    .id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                || crate::layout::NAMES.contains(&plugin.id.as_str())
+                || cfg.plugins[..i].iter().any(|p| p.id == plugin.id)
+            {
+                return Err("plugins require unique IDs of 1..64 ASCII letters, digits, _ or - (excluding builtin names)".into());
+            }
+            if plugin.command.is_empty()
+                || plugin.command[0].trim().is_empty()
+                || plugin.command.iter().any(|s| s.contains('\0'))
+            {
+                return Err(format!(
+                    "plugin {}: command must be a nonempty argument array without NUL bytes",
+                    plugin.id
+                )
+                .into());
+            }
+            if !(80..=800).contains(&plugin.height)
+                || !(1..=86400).contains(&plugin.restart_seconds)
+                || !(1..=86400).contains(&plugin.timeout_seconds)
+            {
+                return Err(format!("plugin {}: height must be 80..800, restart_seconds and timeout_seconds 1..86400", plugin.id).into());
+            }
+        }
         if let Some(widgets) = raw.widgets {
             for (i, widget) in widgets.iter().enumerate() {
                 if widgets[..i].contains(widget) {
                     return Err("widgets must not contain duplicate names".into());
+                }
+            }
+            for name in &widgets {
+                if !crate::registry::valid_id(name) {
+                    return Err(format!("invalid widget name: {name}").into());
+                }
+                if !crate::layout::NAMES.contains(&name.as_str()) {
+                    if let Some(plugin) = cfg.plugins.iter_mut().find(|p| p.id == *name) {
+                        plugin.enabled = true;
+                    } else {
+                        cfg.plugins.push(crate::registry::resolve(name, path)?);
+                    }
                 }
             }
             cfg.widgets = widgets;
@@ -155,9 +221,30 @@ impl Config {
         Ok(cfg)
     }
 
+    pub fn panel_count(&self) -> usize {
+        3 + self.plugins.len()
+    }
+
+    pub fn panel_height(&self, index: usize) -> i32 {
+        if index < 3 {
+            crate::layout::HEIGHTS[index]
+        } else {
+            self.plugins[index - 3].height
+        }
+    }
+
+    pub fn enabled_panel_count(&self) -> usize {
+        self.widgets
+            .iter()
+            .filter(|name| crate::layout::NAMES.contains(&name.as_str()))
+            .count()
+            + self.plugins.iter().filter(|p| p.enabled).count()
+    }
+
     pub fn load(path: &Path, explicit: bool) -> crate::Result<Self> {
         match fs::read_to_string(path) {
-            Ok(text) => Self::parse(&text).map_err(|e| format!("{}: {e}", path.display()).into()),
+            Ok(text) => Self::parse_at(&text, Some(path))
+                .map_err(|e| format!("{}: {e}", path.display()).into()),
             Err(e) if !explicit && e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(format!("{}: {e}", path.display()).into()),
         }
@@ -206,10 +293,39 @@ pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
 mod tests {
     use super::*;
     #[test]
+    fn plugins_are_opt_in_and_reject_ambiguous_or_invalid_definitions() {
+        let base = "[[plugins]]\nid = 'custom'\ncommand = ['python3', '/tmp/example.py']\n";
+        let config = Config::parse(base).unwrap();
+        assert_eq!(config.enabled_panel_count(), 3);
+        assert!(!config.panel_enabled(3));
+        assert!(Config::parse("").unwrap().plugins.is_empty());
+        let config = Config::parse(&format!("{base}enabled = true\nheight = 250\n")).unwrap();
+        assert!(config.panel_enabled(3));
+        assert_eq!(config.panel_height(3), 250);
+        assert_eq!(config.enabled_panel_count(), 4);
+        for bad in [
+            base.replace("'custom'", "'clock'"),
+            base.replace("'custom'", "'../custom'"),
+            base.replace("'custom'", "''"),
+            base.replace("['python3', '/tmp/example.py']", "[]"),
+            format!("{base}height = 801\n"),
+            format!("{base}timeout_seconds = 0\n"),
+            format!("{base}restart_seconds = 0\n"),
+            format!("{base}enabeld = true\n"),
+            format!("{base}\n{base}"),
+        ] {
+            assert!(Config::parse(&bad).is_err(), "{bad}");
+        }
+    }
+    #[test]
     fn enabled_widgets_default_subset_and_empty() {
         assert_eq!(
             Config::parse("").unwrap().widgets,
-            vec![Widget::Clock, Widget::Calendar, Widget::System]
+            vec![
+                "clock".to_string(),
+                "calendar".to_string(),
+                "system".to_string()
+            ]
         );
         let config = Config::parse("widgets = ['system', 'clock']").unwrap();
         assert!(config.panel_enabled(0));
