@@ -51,6 +51,7 @@ INTERFACES = {
     'wl_output': (specs('release'), specs('geometry iiiiissi; mode uiii; done; scale i; name s; description s')),
     'wl_seat': (specs('get_pointer n; get_keyboard n; get_touch n; release'),
                 specs('capabilities u; name s')),
+    'wl_keyboard': (specs('release'), specs('keymap uhu; enter uoa; leave uo; key uuuu; modifiers uuuuu; repeat_info ii')),
     'wl_pointer': (specs('set_cursor uoii; release'),
                    specs('enter uoff; leave uo; motion uff; button uuuu; axis uuf; frame; '
                          'axis_source u; axis_stop uu; axis_discrete ui; axis_value120 ui; '
@@ -74,7 +75,9 @@ def pack_message(object_id, opcode, payload=b''):
 
 
 class FakeWayland:
-    def __init__(self, runtime):
+    def __init__(self, runtime, keyboard=False):
+        self.has_keyboard = keyboard
+        self.keyboard_id = None
         self.runtime = Path(runtime)
         self.path = self.runtime / 'wayland-0'
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -155,9 +158,12 @@ class FakeWayland:
         events = INTERFACES[interface][1]
         opcode = next(i for i, entry in enumerate(events) if entry[0] == event_name)
         payload = bytearray()
+        descriptors = []
         for typ, value in zip(events[opcode][1], args):
             if typ in ('u', 'i', 'f', 'o', 'n'):
                 payload += struct.pack('=I', value & 0xffffffff)
+            elif typ == 'h':
+                descriptors.append(value)
             elif typ == 's':
                 payload += pack_string(value)
             elif typ == 'a':
@@ -165,7 +171,12 @@ class FakeWayland:
             else:
                 raise AssertionError(f'unsupported event arg {interface}.{event_name}: {typ}')
         with self.lock:
-            self.conn.sendall(pack_message(object_id, opcode, payload))
+            message = pack_message(object_id, opcode, payload)
+            if descriptors:
+                sent = self.conn.sendmsg([message], [(socket.SOL_SOCKET, socket.SCM_RIGHTS, array.array('i', descriptors).tobytes())])
+                if sent < len(message): self.conn.sendall(message[sent:])
+            else:
+                self.conn.sendall(message)
 
     def _global(self, name, interface, version):
         self._send(self.registry_id, 'wl_registry', 'global',
@@ -279,12 +290,15 @@ class FakeWayland:
                         self._send(new_id, 'wl_output', 'name', ('FAKE-1',))
                 elif interface == 'wl_seat':
                     self.seat_id = new_id
-                    self._send(new_id, 'wl_seat', 'capabilities', (1,))
+                    self._send(new_id, 'wl_seat', 'capabilities', (3 if self.has_keyboard else 1,))
                 elif interface == 'zwlr_layer_shell_v1':
                     self.shell_id = new_id
             elif iface == 'wl_seat' and name == 'get_pointer':
                 self.pointer_id = args[0]
                 self.objects[self.pointer_id] = 'wl_pointer'
+            elif iface == 'wl_seat' and name == 'get_keyboard':
+                self.keyboard_id = args[0]
+                self.objects[self.keyboard_id] = 'wl_keyboard'
             elif iface == 'zwlr_layer_shell_v1' and name == 'get_layer_surface':
                 layer_id, surface_id, output_id, layer, namespace = args
                 self.objects[layer_id] = 'zwlr_layer_surface_v1'
@@ -508,6 +522,59 @@ class InteractiveRoutingTests(unittest.TestCase):
                                             capture_output=True, text=True, timeout=5)
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(json.loads(result.stdout)[field], expected)
+            finally:
+                process.terminate()
+                try: process.wait(timeout=2)
+                except subprocess.TimeoutExpired: process.kill();process.wait()
+                server.close();process.stderr.close()
+
+
+class KeyboardRoutingTests(unittest.TestCase):
+    def test_keymap_focus_key_and_focus_loss_reach_only_opted_in_provider(self):
+        binary=Path(os.environ.get('RS_WWIDGET_TEST_BINARY', ROOT/'rs-wwidget'))
+        if not binary.exists(): self.skipTest('build rs-wwidget first')
+        with tempfile.TemporaryDirectory(prefix='wwidget-keys-') as folder:
+            root=Path(folder);runtime=root/'runtime';runtime.mkdir(mode=0o700)
+            home=root/'home';home.mkdir();marker=root/'pressed';lost=root/'lost-focus'
+            script=root/'provider.py'
+            script.write_text('import json,sys\nfrom pathlib import Path\nseen=[]\n'
+                'for line in sys.stdin:\n'
+                ' e=json.loads(line);seen.append(e["type"])\n'
+                ' if e["type"]=="key" and e["pressed"]:\n'
+                f'  Path({str(marker)!r}).write_text(json.dumps({{"key":e["key"],"seen":seen}}))\n'
+                ' if e["type"]=="keyboard_focus" and not e["focused"]:\n'
+                f'  Path({str(lost)!r}).write_text("lost")\n'
+                ' print(json.dumps({"version":2,"title":str(len(seen))}),flush=True)\n')
+            cfg=root/'config.toml'
+            cfg.write_text('widgets=[]\n[[plugins]]\nid="keys-test"\nenabled=true\nprotocol=2\ninput="interactive"\nkeyboard=true\n'
+                           f'command=["python3",{json.dumps(str(script))}]\n')
+            env={**os.environ,'HOME':str(home),'XDG_CONFIG_HOME':str(home/'.config'),
+                 'XDG_STATE_HOME':str(home/'.state'),'XDG_RUNTIME_DIR':str(runtime),'WAYLAND_DISPLAY':'wayland-0'}
+            server=FakeWayland(runtime, keyboard=True).start()
+            process=subprocess.Popen([str(binary),'--config',str(cfg),'--run'],env=env,
+                                     stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            try:
+                server.wait_for(lambda: server.keyboard_id is not None and server.source_id is not None and bool(server.commits),'keyboard/surface not ready')
+                fd=os.memfd_create('test-keymap');keymap=b'test-xkb-map\0';os.write(fd,keymap);os.lseek(fd,0,os.SEEK_SET)
+                try:
+                    with server.cv:
+                        server._send(server.keyboard_id,'wl_keyboard','keymap',(1,fd,len(keymap)))
+                        server._send(server.keyboard_id,'wl_keyboard','repeat_info',(25,400))
+                        server._send(server.keyboard_id,'wl_keyboard','enter',(600,server.source_id,b''))
+                        server._send(server.keyboard_id,'wl_keyboard','key',(601,123,57,1))
+                        server.cv.notify_all()
+                finally: os.close(fd)
+                server.wait_for(marker.exists,'key event did not reach provider')
+                data=json.loads(marker.read_text());self.assertEqual(data['key'],57)
+                self.assertLess(data['seen'].index('keymap'),data['seen'].index('keyboard_focus'))
+                self.assertLess(data['seen'].index('keyboard_focus'),data['seen'].index('key'))
+                with server.cv:
+                    server._send(server.keyboard_id,'wl_keyboard','leave',(602,server.source_id));server.cv.notify_all()
+                server.wait_for(lost.exists,'focus loss did not reach provider')
+                with server.cv:
+                    server._send(server.keyboard_id,'wl_keyboard','key',(603,124,58,1));server.cv.notify_all()
+                time.sleep(.1)
+                self.assertEqual(json.loads(marker.read_text())['key'],57)
             finally:
                 process.terminate()
                 try: process.wait(timeout=2)
