@@ -1,0 +1,36 @@
+name: Checks
+on:
+  push:
+    branches: [main, test/addon-api-v2]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config libcairo2-dev libpango1.0-dev libglib2.0-dev python3-venv desktop-file-utils dbus-daemon
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install 1.92.0 --profile minimal --component clippy --component rustfmt
+          rustup default 1.92.0
+      - name: Optional editor schema validator
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install jsonschema==4.25.1
+      - name: Formatting and Clippy
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+      - name: Build and native/protocol tests
+        run: |
+          . .venv/bin/activate
+          ./build.sh
+          cargo test --locked --test ipc -- --ignored
