@@ -44,7 +44,7 @@ pub fn create(args: &[String]) -> Result<()> {
     let (mut rotation, mut opacity, mut radius) = (0.0_f64, 1.0_f64, 0.0_f64);
     let (mut fit, mut input, mut filter) = ("contain", "none", "bilinear");
     let mut seen = std::collections::BTreeSet::new();
-    for pair in args[2..].chunks_exact(2) {
+    for pair in args[2..].as_chunks::<2>().0 {
         if !seen.insert(pair[0].as_str()) {
             return Err(format!("duplicate option: {}", pair[0]).into());
         }

@@ -300,8 +300,13 @@ fn background_opacity_changes_fill_without_fading_text() {
         let background = (140 * 300 + 150) * 4;
         assert_eq!(pixels[background + 3], alpha, "opacity={opacity}");
         let mut text_pixels = 0;
-        for (before, after) in original.chunks_exact(4).zip(pixels.chunks_exact(4)) {
-            if before == [0xd4, 0xbe, 0x98, 255] {
+        for (before, after) in original
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(pixels.as_chunks::<4>().0.iter())
+        {
+            if *before == [0xd4, 0xbe, 0x98, 255] {
                 assert_eq!(
                     after, before,
                     "opaque text must not fade with the card background"

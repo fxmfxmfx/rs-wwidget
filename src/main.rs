@@ -178,16 +178,29 @@ fn main() {
         std::process::exit(1);
     }
 }
+fn take_config_argument(args: &mut Vec<String>) -> Result<Option<PathBuf>> {
+    let mut explicit = None;
+    for index in 0..args.len() {
+        if args[index] == "widget" || args[index] == "--" {
+            break;
+        }
+        if args[index] == "--config" {
+            if index + 1 >= args.len() {
+                return Err("--config requires a file path".into());
+            }
+            explicit = Some(PathBuf::from(args.remove(index + 1)));
+            args.remove(index);
+            break;
+        }
+    }
+    if let Some(index) = args.iter().position(|arg| arg == "--") {
+        args.remove(index);
+    }
+    Ok(explicit)
+}
 fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let mut explicit = None;
-    if let Some(i) = args.iter().position(|s| s == "--config") {
-        if i + 1 >= args.len() {
-            return Err("--config requires a file path".into());
-        }
-        explicit = Some(PathBuf::from(args.remove(i + 1)));
-        args.remove(i);
-    }
+    let explicit = take_config_argument(&mut args)?;
     let action = args.first().map_or("--run", String::as_str);
     match action {
         "--help" | "-h" => {
@@ -272,5 +285,42 @@ fn run() -> Result<()> {
             }
         }
         _ => Err("Invalid arguments. Use rs-wwidget --help".into()),
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+    #[test]
+    fn widget_event_names_are_not_global_config_options() {
+        let mut args = [
+            "--config",
+            "settings.toml",
+            "widget",
+            "counter",
+            "send",
+            "--config",
+            "{}",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(
+            take_config_argument(&mut args).unwrap(),
+            Some(PathBuf::from("settings.toml"))
+        );
+        assert_eq!(args, ["widget", "counter", "send", "--config", "{}"]);
+        let mut legacy = ["--run", "--config", "settings.toml"]
+            .map(str::to_owned)
+            .to_vec();
+        assert_eq!(
+            take_config_argument(&mut legacy).unwrap(),
+            Some(PathBuf::from("settings.toml"))
+        );
+        assert_eq!(legacy, ["--run"]);
+        let mut literal = ["widget", "counter", "send", "--", "--", "{}"]
+            .map(str::to_owned)
+            .to_vec();
+        assert!(take_config_argument(&mut literal).unwrap().is_none());
+        assert_eq!(literal, ["widget", "counter", "send", "--", "{}"]);
     }
 }

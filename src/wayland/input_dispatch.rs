@@ -167,9 +167,11 @@ impl Dispatch<wl_keyboard::WlKeyboard, ()> for App {
                 s.keyboard_state();
                 if let Some(panel) = s.keyboard_panel() {
                     let keys = keys
-                        .chunks_exact(4)
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
                         .take(256)
-                        .map(|k| u32::from_ne_bytes(k.try_into().unwrap()))
+                        .map(|k| u32::from_ne_bytes(*k))
                         .collect();
                     s.input_event(
                         panel,

@@ -439,8 +439,10 @@ fn poster_cli_creates_and_rotates_without_cropping_or_overwriting() {
     let r = Renderer::new(Palette::DEFAULT, 1.0);
     let data = pixels(&r, plugin, plugin.static_data.as_ref().unwrap(), 1);
     assert!(
-        data.chunks_exact(4)
-            .all(|p| u32::from_ne_bytes(p.try_into().unwrap()) == 0xffff0000)
+        data.as_chunks::<4>()
+            .0
+            .iter()
+            .all(|p| u32::from_ne_bytes(*p) == 0xffff0000)
     );
     let before = std::fs::read(dest.join("frame.json")).unwrap();
     let output = std::process::Command::new(binary)

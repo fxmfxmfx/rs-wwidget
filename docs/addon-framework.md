@@ -206,5 +206,5 @@ validate QML renderer behavior on a desktop with the selected runtime installed.
 Schemas are also installed under `~/.local/share/rs-wwidget/sdk/schema`, and can
 be exported with `--print-widget-schema` / `--print-frame-schema`.
 The GitHub Actions workflow runs the native, SDK, schema and protocol suite on
-Ubuntu. Editor schemas are in `sdk/schema/`; `jsonschema` is an optional test-only
+Ubuntu with both Rust 1.92 and current stable. Editor schemas are in `sdk/schema/`; `jsonschema` is an optional test-only
 dependency, not a host or SDK runtime dependency.
