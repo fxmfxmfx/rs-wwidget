@@ -15,6 +15,8 @@ Package details, controls, and local settings are described below.
 
 | Name | What it shows | Package-specific notes |
 | --- | --- | --- |
+| `qml-example` | Real Quickshell/QtQuick external renderer (optional) | [Usage](qml-example/README.md) |
+| `playground` | Interactive buttons/slider and keyboard reference | [Usage](playground/README.md) |
 | `poster` | Static PNG/JPEG without decoration or a provider | [Setup](poster/README.md) |
 | `network` | Interface receive/transmit rates | [Settings](network/README.md) |
 | `temperatures` | CPU/GPU temperatures and supported fan speeds | [Settings](temperatures/README.md) |

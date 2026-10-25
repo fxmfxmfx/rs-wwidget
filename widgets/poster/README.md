@@ -25,7 +25,7 @@ bounded PNG/JPEG decoder before files are created. No Python is required.
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--width`, `--height` | Width 360; height from image aspect | Unrotated image box, 32..2048 logical pixels; one dimension preserves aspect, two specify a box |
+| `--width`, `--height` | Width 360; height from image aspect | Unrotated image box, 32..8192 logical pixels; one dimension preserves aspect, two specify a box |
 | `--rotation` | 0 | Clockwise angle in degrees, -360..360; negative tilts counterclockwise |
 | `--fit` | `contain` | `contain` shows the whole image, `cover` crops to fill, `stretch` distorts to fill |
 | `--opacity` | 1 | Whole-image opacity, 0..1, multiplied by PNG alpha |
@@ -34,7 +34,7 @@ bounded PNG/JPEG decoder before files are created. No Python is required.
 | `--filter` | `bilinear` | `nearest` for pixel art, `bilinear` for general scaling, `best` for Cairo's highest-quality filter |
 
 The surface automatically grows to contain the rotated image box, so tilted
-corners are not cut off. If that would exceed 2048px on either axis, reduce the
+corners are not cut off. If that would exceed 8192px on either axis, reduce the
 image box dimensions. The source image is copied without re-encoding.
 
 ## Rotate an existing poster
@@ -52,8 +52,10 @@ It rewrites TOML formatting/comments. A manifest write failure rolls the frame
 back. Rotation is supported for static, decoration-free v2 packages with exactly
 one image and no rows; use the general canvas API for custom compositions.
 
-Restart after creating or rotating a poster, editing static JSON, or replacing
-its image. Saved positions in `layout.ini` take precedence over manifest
+Use `rs-wwidget widget my-poster reload` after rotating/editing an enabled poster,
+or enable `watch_files = ["frame.json", "poster.png"]` in its manifest. Without
+watching/live reload, restart after changes. New package IDs still need selection
+in the main widgets list and a host restart. Saved positions in `layout.ini` take precedence over manifest
 `position = [64, 96]` and are constrained to the selected monitor's logical size.
 To move a click-through poster, set `input = "all"` in `widget.toml`, restart,
 drag, then set `input = "none"` and restart again. Transparent margins of the
@@ -104,3 +106,16 @@ rs-wwidget --preview /tmp/widgets.png
 
 See [API v2](../../docs/widget-api-v2.md) for composition and the
 [JSON Schema](../../sdk/schema/frame-v2.schema.json) for editor assistance.
+
+
+Live pinning and placement also work:
+
+```sh
+rs-wwidget widget my-poster lock
+rs-wwidget widget my-poster move 320 160
+rs-wwidget widget my-poster hide
+rs-wwidget widget my-poster show
+```
+
+These controls persist without changing the image. Use `unlock` or `reset` to
+restore drag behavior. See the [framework guide](../../docs/addon-framework.md).

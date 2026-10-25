@@ -1,5 +1,7 @@
 # Widget API v2 — canvas and static packages
 
+See the [framework guide](addon-framework.md) for script starters, live control,
+file watching, state, layers, locking and external/QML renderer packages.
 API v1 commands and row frames continue to work. v2 adds a clipped, layered
 canvas in logical pixels; no browser, GTK, new runtime dependencies, host
 threads, or per-widget processes are required for static content.
@@ -27,9 +29,9 @@ Unknown fields, invalid dimensions, and ambiguous sources are errors.
 | --- | --- | --- |
 | `command` | absent | Persistent program's argument array; stdout NDJSON as in v1 |
 | `frame` | absent | Static JSON file; choose exactly one of `command` or `frame` |
-| `width` / `height` | 300 / 178 | Panel dimensions, each 32..2048 logical pixels |
+| `width` / `height` | 300 / 178 | Panel dimensions, each 32..8192 logical pixels |
 | `decoration` | `"card"` | `card`: themed card/title; `none`: transparent canvas without title or frame |
-| `input` | `"title"` | `title`: top 42px drags; `all`: whole panel drags; `none`: all clicks pass through |
+| `input` | `"title"` | `title`: top 42px drags; `all`: whole panel drags; `none`: all clicks pass through; `interactive`: events to provider |
 | `position` | automatic | Optional `[x,y]` initial logical coordinates; saved layout takes precedence |
 | `protocol` | 1 | Requested child protocol hint, 1 or 2; host accepts frames of either version |
 | `restart_seconds` | 30 | Child restart delay, 1..86400 |
@@ -38,8 +40,8 @@ Unknown fields, invalid dimensions, and ambiguous sources are errors.
 Enabled static files load once during configuration validation; disabled legacy
 static definitions do not read their frame files. They do not spawn a
 process, use a poll fd, require heartbeats, or trigger periodic redraws. The
-host's normal event loop still runs. Restart after changing a manifest, static
-frame, or static image. Disabled packages are not resolved. Relative frame and
+host's normal event loop still runs. Use live reload or opt-in `watch_files` to
+apply edits; otherwise restart after changing a manifest, static frame or image. Disabled packages are not resolved. Relative frame and
 image paths resolve against the package directory; absolute paths work too.
 Legacy `[[plugins]]` also accepts these fields and resolves paths against the
 main config directory. Paths do not expand `~`, variables or shell syntax.
@@ -53,9 +55,11 @@ restarts and crash handling still apply. Children receive:
 - `RS_WWIDGET_WIDTH`, `RS_WWIDGET_HEIGHT`: panel dimensions.
 - `RS_WWIDGET_ASSET_DIR`: package directory (config directory for legacy plugins).
 
-This is a display API. `input` controls dragging or click-through; it does not
-send buttons or keyboard events to children. All panels stay on the host's
-Wayland bottom layer, without keyboard focus or reserved layout space.
+For executable providers, [interactive input](widget-input.md) adds mouse,
+scroll, physical keyboard events and stable element IDs over stdin. Opt in with
+`input = "interactive"` and `protocol = 2`. `locked` disables dragging and
+`layer` selects the Wayland layer. Defaults remain bottom-layer, click-through
+outside the title, without keyboard focus or reserved layout space.
 
 ## Frame format
 
@@ -115,12 +119,13 @@ The native poster commands calculate and update that space automatically.
 Colors accept `#RRGGBB`, `#RRGGBBAA`, `transparent`, or a theme token:
 `background`, `foreground`, `muted`, `accent`, `green`, `border`,
 `bar_background`, `grid_background`. Color alpha multiplies element opacity.
-Text is literal, without markup, in the host's configured font family.
+Text is literal, without markup. It inherits the host font unless `font` selects
+another installed family (including icon fonts). `bold` and `italic` are optional.
 
 | `content.type` | Required fields | Optional fields (defaults) |
 | --- | --- | --- |
 | `image` | `path` | `fit`: `contain`, `cover`, `stretch` (default `contain`); `revision`: unsigned integer (0); `position`: normalized `[x,y]` (`[0.5,0.5]`); `filter`: `nearest`/`bilinear`/`best` (`bilinear`) |
-| `text` | `text` | `size`: 1..512 (16), `color` (`foreground`), `align`: `left`/`center`/`right` (`left`), `wrap` (false), `bold` (false) |
+| `text` | `text` | `size`: 1..512 (16), `color` (`foreground`), `align`: `left`/`center`/`right` (`left`), `wrap`/`bold`/`italic` (false), `font` (host family; installed family name, up to 128 chars) |
 | `rect` | — | `color` (`accent`), `radius`: 0..2048 (0) |
 | `line` | — | `color` (`accent`), `thickness`: 0.1..128 (1) |
 | `bar` | `value`: 0..1 | `color` (`accent`), `background` (`bar_background`), `radius`: 0..2048 (0) |
@@ -132,7 +137,8 @@ aligns left/top, `[1,1]` right/bottom, `[0.5,0.5]` centers. `filter = "nearest"`
 preserves hard pixel-art edges; `bilinear` interpolates; `best` requests Cairo's
 highest-quality sampling. PNG transparency is preserved with
 premultiplied alpha. JPEG is supported. Images are local still images only;
-no URL fetches, SVG, animation or video. A line runs from the bottom-left to
+no URL fetches or animated-file decoding. Providers can animate successive
+image revisions, or use an external renderer for SVG/video/native multimedia. A line runs from the bottom-left to
 the top-right of its box. For a horizontal separator, use a thin rectangle.
 Graphs use a fixed 0..1 vertical range; `fill` selects a solid area instead of
 a stroke. Text ellipsizes when it exceeds its box; `wrap` enables word wrapping.

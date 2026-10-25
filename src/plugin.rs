@@ -2,6 +2,7 @@
 use crate::config::PluginConfig;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::VecDeque,
     io,
     os::fd::{AsRawFd, RawFd},
     os::unix::process::CommandExt,
@@ -79,7 +80,13 @@ impl Frame {
         if frame.elements.len() > 256 {
             return Err("at most 256 elements per frame".into());
         }
+        let mut ids = std::collections::BTreeSet::new();
         for (index, element) in frame.elements.iter().enumerate() {
+            if let Some(id) = &element.id
+                && !ids.insert(id)
+            {
+                return Err(format!("duplicate element id: {id}").into());
+            }
             element
                 .validate()
                 .map_err(|e| format!("element {index}: {e}"))?;
@@ -114,6 +121,13 @@ impl Frame {
         Ok(frame)
     }
 
+    pub fn target(&self, point: (f64, f64)) -> Option<(String, [f64; 2])> {
+        self.elements.iter().rev().find_map(|element| {
+            let id = element.id.as_ref()?;
+            element.hit(point).map(|local| (id.clone(), local))
+        })
+    }
+
     pub fn load(path: &std::path::Path) -> crate::Result<Self> {
         use std::io::Read;
         let mut data = Vec::new();
@@ -139,9 +153,19 @@ impl Frame {
 
 struct Running {
     child: Child,
-    stdout: std::process::ChildStdout,
+    stdout: Option<std::process::ChildStdout>,
+    stdin: Option<std::process::ChildStdin>,
+    stderr: Option<std::process::ChildStderr>,
     stopping: bool,
 }
+
+struct PendingEvent {
+    data: Vec<u8>,
+    offset: usize,
+    motion: bool,
+}
+const MAX_EVENT_BYTES: usize = 262_144;
+const MAX_EVENTS: usize = 128;
 
 pub struct Runtime {
     config: PluginConfig,
@@ -152,6 +176,15 @@ pub struct Runtime {
     deadline: Instant,
     failed: bool,
     restart_at: Option<Instant>,
+    events: VecDeque<PendingEvent>,
+    event_bytes: usize,
+    generation: u64,
+    config_generation: u64,
+    pending_config: Option<PluginConfig>,
+    watch: crate::watch::WatchSet,
+    last_error: Option<String>,
+    stderr_tail: VecDeque<u8>,
+    log_wait: Option<Instant>,
 }
 
 impl Runtime {
@@ -167,6 +200,7 @@ impl Runtime {
         } else {
             now
         };
+        let watch = crate::watch::WatchSet::new(&config, now);
         Self {
             config,
             frame,
@@ -176,6 +210,15 @@ impl Runtime {
             deadline,
             failed: false,
             restart_at: None,
+            events: VecDeque::new(),
+            event_bytes: 0,
+            generation: 0,
+            config_generation: 0,
+            pending_config: None,
+            watch,
+            last_error: None,
+            stderr_tail: VecDeque::new(),
+            log_wait: None,
         }
     }
 
@@ -185,19 +228,50 @@ impl Runtime {
 
     /// Starts due children and enforces liveness. Returns whether display data changed.
     pub fn tick(&mut self, now: Instant) -> bool {
-        if self.config.frame.is_some() {
-            self.deadline = now + Duration::from_secs(86400);
-            return false;
-        }
         if !self.config.enabled {
             return false;
         }
+        if self.pending_config.is_none()
+            && self.watch.changed(now)
+            && let Err(error) = self.reload(now)
+        {
+            self.last_error = Some(
+                format!("reload rejected: {error}")
+                    .chars()
+                    .take(1024)
+                    .collect(),
+            );
+            eprintln!(
+                "plugin {}: reload rejected, keeping previous configuration: {error}",
+                self.config.id
+            );
+        }
         let mut dirty = self.service(now);
+        if self.running.is_none()
+            && let Some(config) = self.pending_config.take()
+        {
+            if let Some(frame) = &config.static_data {
+                self.frame = frame.clone();
+            }
+            self.config = config;
+            self.watch = crate::watch::WatchSet::new(&self.config, now);
+            self.config_generation += 1;
+            self.failed = false;
+            self.restart_at = None;
+            self.last_frame = None;
+            self.deadline = now;
+            dirty = true;
+        }
+        if self.config.frame.is_some() {
+            self.deadline = now + Duration::from_secs(86400);
+            return dirty;
+        }
         if self.running.as_ref().is_some_and(|r| r.stopping) {
-            // Reap killed children promptly, but retain the original restart time.
             self.deadline = now + Duration::from_millis(25);
         } else if self.running.is_some() {
-            if self.last_frame.is_some_and(|t| {
+            if self.config.render_mode == crate::config::RenderMode::External {
+                self.deadline = now + Duration::from_secs(1);
+            } else if self.last_frame.is_some_and(|t| {
                 now.saturating_duration_since(t)
                     >= Duration::from_secs(self.config.timeout_seconds.max(1))
             }) {
@@ -205,34 +279,285 @@ impl Runtime {
             }
         } else if now >= self.restart_at.unwrap_or(self.deadline) {
             self.restart_at = None;
-            if let Err(e) = self.start(now) {
-                dirty |= self.fail(&format!("start failed: {e}"), now);
+            if let Err(error) = self.start(now) {
+                dirty |= self.fail(&format!("start failed: {error}"), now);
             }
         }
         dirty
     }
 
+    pub fn is_running(&self) -> bool {
+        self.running.as_ref().is_some_and(|r| !r.stopping)
+    }
+    pub fn diagnostics(&self) -> serde_json::Value {
+        let bytes: Vec<u8> = self.stderr_tail.iter().copied().collect();
+        serde_json::json!({"render_mode":if self.config.render_mode==crate::config::RenderMode::External {"external"}else{"canvas"},
+            "stderr_tail":String::from_utf8_lossy(&bytes),"running":self.is_running(),"pid":self.running.as_ref().map(|r|r.child.id()),
+            "generation":self.generation,"config_generation":self.config_generation,"reloading":self.pending_config.is_some(),"last_error":self.last_error})
+    }
+    pub fn config_generation(&self) -> u64 {
+        self.config_generation
+    }
+    pub fn config(&self) -> &PluginConfig {
+        &self.config
+    }
+
+    /// Validate first; a bad edit never stops the currently working provider.
+    /// Update this package's manifest, validate it, and queue a live reload.
+    pub fn configure(&mut self, options: &serde_json::Value, now: Instant) -> crate::Result<()> {
+        let path = self
+            .config
+            .package_path
+            .as_ref()
+            .ok_or("configure requires a package manifest; edit legacy config directly")?
+            .clone();
+        let options = options
+            .as_object()
+            .ok_or("configure expects a JSON object")?;
+        if options
+            .keys()
+            .any(|key| ["id", "version", "enabled"].contains(&key.as_str()))
+        {
+            return Err("configure cannot change id/version/enabled".into());
+        }
+        let original = std::fs::read_to_string(&path)?;
+        let mut fields: toml::Table = toml::from_str(&original)?;
+        for (key, value) in options {
+            if value.is_null() {
+                fields.remove(key);
+            } else {
+                fields.insert(key.clone(), toml::Value::try_from(value)?);
+            }
+        }
+        let mut definition = fields.clone();
+        definition.remove("version");
+        let mut candidate: PluginConfig = toml::Value::Table(definition).try_into()?;
+        candidate.validate()?;
+        candidate.asset_dir = self.config.asset_dir.clone();
+        candidate.load_static()?;
+        let updated = toml::to_string_pretty(&fields)?;
+        crate::config::atomic_write(&path, updated.as_bytes())?;
+        if let Err(error) = self.reload(now) {
+            if let Err(rollback) = crate::config::atomic_write(&path, original.as_bytes()) {
+                return Err(format!(
+                    "reload failed: {error}; manifest rollback failed: {rollback}"
+                )
+                .into());
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub fn reload(&mut self, now: Instant) -> crate::Result<()> {
+        let mut config = if self.config.package_path.is_some() {
+            crate::registry::resolve_directory(&self.config.asset_dir)?
+        } else {
+            let mut c = self.config.clone();
+            c.load_static()?;
+            c
+        };
+        config.enabled = self.config.enabled;
+        config.host_theme = self.config.host_theme;
+        config.validate()?;
+        if config.id != self.config.id {
+            return Err("reload cannot change a widget ID".into());
+        }
+        self.pending_config = Some(config);
+        if let Some(running) = self.running.as_mut()
+            && !running.stopping
+        {
+            unsafe {
+                libc::kill(-(running.child.id() as i32), libc::SIGKILL);
+            }
+            running.stopping = true;
+        }
+        self.events.clear();
+        self.event_bytes = 0;
+        self.line.clear();
+        self.failed = true;
+        self.restart_at = Some(now);
+        self.deadline = now;
+        Ok(())
+    }
+
     pub fn deadline(&self) -> Instant {
-        self.deadline
+        let deadline = self
+            .watch
+            .deadline()
+            .map_or(self.deadline, |watch| watch.min(self.deadline));
+        self.log_wait.map_or(deadline, |log| deadline.min(log))
+    }
+
+    pub fn poll_stderr_fd(&self) -> Option<RawFd> {
+        if self.log_wait.is_some_and(|t| Instant::now() < t) {
+            return None;
+        }
+        self.running
+            .as_ref()
+            .and_then(|r| r.stderr.as_ref())
+            .map(AsRawFd::as_raw_fd)
+    }
+
+    fn drain_stderr(&mut self, now: Instant) {
+        if self.log_wait.is_some_and(|t| now < t) {
+            return;
+        }
+        self.log_wait = None;
+        let Some(fd) = self
+            .running
+            .as_ref()
+            .and_then(|r| r.stderr.as_ref())
+            .map(AsRawFd::as_raw_fd)
+        else {
+            return;
+        };
+        let mut budget = 16_384;
+        let mut bytes = [0u8; 4096];
+        while budget > 0 {
+            let n = unsafe { libc::read(fd, bytes.as_mut_ptr().cast(), bytes.len().min(budget)) };
+            if n > 0 {
+                budget -= n as usize;
+                self.stderr_tail.extend(&bytes[..n as usize]);
+                while self.stderr_tail.len() > 8192 {
+                    self.stderr_tail.pop_front();
+                }
+            } else if n == 0 {
+                if let Some(r) = &mut self.running {
+                    r.stderr = None;
+                }
+                break;
+            } else {
+                let e = io::Error::last_os_error();
+                if e.kind() != io::ErrorKind::WouldBlock
+                    && e.kind() != io::ErrorKind::Interrupted
+                    && let Some(r) = &mut self.running
+                {
+                    r.stderr = None;
+                }
+                break;
+            }
+        }
+        if budget == 0 {
+            self.log_wait = Some(now + Duration::from_millis(50));
+        }
     }
 
     pub fn poll_fd(&self) -> Option<RawFd> {
         self.running
             .as_ref()
             .filter(|r| !r.stopping)
-            .map(|r| r.stdout.as_raw_fd())
+            .and_then(|r| r.stdout.as_ref())
+            .map(AsRawFd::as_raw_fd)
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn poll_write_fd(&self) -> Option<RawFd> {
+        if self.events.is_empty() {
+            return None;
+        }
+        self.running
+            .as_ref()
+            .filter(|r| !r.stopping)?
+            .stdin
+            .as_ref()
+            .map(AsRawFd::as_raw_fd)
+    }
+
+    /// Bounded, nonblocking stdin transport. Motion may coalesce; discrete events
+    /// never disappear silently. An unresponsive event consumer is restarted.
+    pub fn send_event(&mut self, event: &crate::input::Event, now: Instant) -> bool {
+        if (event.is_keyboard() && !self.config.keyboard)
+            || self.config.input != crate::config::Input::Interactive
+            || self
+                .running
+                .as_ref()
+                .is_none_or(|r| r.stopping || r.stdin.is_none())
+        {
+            return false;
+        }
+        let data = event.encode();
+        if event.is_motion()
+            && self
+                .events
+                .back()
+                .is_some_and(|e| e.motion && e.offset == 0)
+        {
+            self.event_bytes -= self.events.pop_back().unwrap().data.len();
+        }
+        if data.len() > MAX_EVENT_BYTES
+            || self.event_bytes + data.len() > MAX_EVENT_BYTES
+            || self.events.len() >= MAX_EVENTS
+        {
+            return self.fail("input queue overflow", now);
+        }
+        self.event_bytes += data.len();
+        self.events.push_back(PendingEvent {
+            data,
+            offset: 0,
+            motion: event.is_motion(),
+        });
+        self.flush_events(now)
+    }
+
+    fn flush_events(&mut self, now: Instant) -> bool {
+        let Some(fd) = self
+            .running
+            .as_ref()
+            .filter(|r| !r.stopping)
+            .and_then(|r| r.stdin.as_ref())
+            .map(AsRawFd::as_raw_fd)
+        else {
+            return false;
+        };
+        let mut budget = 16_384;
+        while budget > 0 {
+            let Some(event) = self.events.front_mut() else {
+                break;
+            };
+            let bytes = &event.data[event.offset..];
+            let n = unsafe { libc::write(fd, bytes.as_ptr().cast(), bytes.len().min(budget)) };
+            if n > 0 {
+                event.offset += n as usize;
+                self.event_bytes -= n as usize;
+                budget -= n as usize;
+                if event.offset == event.data.len() {
+                    self.events.pop_front();
+                }
+            } else if n < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() == io::ErrorKind::WouldBlock
+                    || error.kind() == io::ErrorKind::Interrupted
+                {
+                    break;
+                }
+                return self.fail(&format!("input write failed: {error}"), now);
+            } else {
+                break;
+            }
+        }
+        false
     }
 
     /// Drains currently available bytes. Call from the event loop after fd readiness.
     pub fn service(&mut self, now: Instant) -> bool {
-        let mut dirty = false;
+        self.drain_stderr(now);
+        let mut dirty = self.flush_events(now);
         let mut budget = READ_BUDGET;
         let mut buf = [0u8; 8192];
         while budget > 0 {
-            let read_result = match self.running.as_ref().filter(|r| !r.stopping) {
-                Some(r) => unsafe {
+            let read_result = match self
+                .running
+                .as_ref()
+                .filter(|r| !r.stopping)
+                .and_then(|r| r.stdout.as_ref())
+            {
+                Some(stdout) => unsafe {
                     libc::read(
-                        r.stdout.as_raw_fd(),
+                        stdout.as_raw_fd(),
                         buf.as_mut_ptr().cast(),
                         buf.len().min(budget),
                     )
@@ -253,6 +578,7 @@ impl Runtime {
                                 self.deadline =
                                     now + Duration::from_secs(self.config.timeout_seconds.max(1));
                                 self.failed = false;
+                                self.last_error = None;
                                 if self.frame != frame {
                                     self.frame = frame;
                                     dirty = true;
@@ -294,7 +620,11 @@ impl Runtime {
                             libc::kill(-(r.child.id() as i32), libc::SIGKILL);
                         }
                     }
+                    self.drain_stderr(now);
                     self.running = None;
+                    self.log_wait = None;
+                    self.events.clear();
+                    self.event_bytes = 0;
                     self.line.clear();
                     if !self.failed {
                         dirty |= self.fail(&format!("process exited ({status})"), now);
@@ -316,44 +646,178 @@ impl Runtime {
             return Err(io::Error::new(io::ErrorKind::InvalidInput, "empty command"));
         }
         let mut command = Command::new(&self.config.command[0]);
+        if let Some(cwd) = &self.config.cwd {
+            command.current_dir(cwd);
+        }
         command
             .args(&self.config.command[1..])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
+            .envs(&self.config.env)
+            .stdin(if self.config.input == crate::config::Input::Interactive {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(
+                if self.config.render_mode == crate::config::RenderMode::External {
+                    Stdio::null()
+                } else {
+                    Stdio::piped()
+                },
+            )
+            .stderr(Stdio::piped())
+            .env(
+                "RS_WWIDGET_RENDER_MODE",
+                if self.config.render_mode == crate::config::RenderMode::External {
+                    "external"
+                } else {
+                    "canvas"
+                },
+            )
+            .env("RS_WWIDGET_ID", &self.config.id)
+            .env(
+                "RS_WWIDGET_LOCKED",
+                if self.config.locked { "1" } else { "0" },
+            )
             .env("RS_WWIDGET_PROTOCOL", self.config.protocol.to_string())
             .env("RS_WWIDGET_WIDTH", self.config.width.to_string())
             .env("RS_WWIDGET_HEIGHT", self.config.height.to_string())
-            .env("RS_WWIDGET_ASSET_DIR", &self.config.asset_dir);
+            .env("RS_WWIDGET_ASSET_DIR", &self.config.asset_dir)
+            .env(
+                "RS_WWIDGET_STATE_DIR",
+                crate::config::state_dir()
+                    .join("widgets")
+                    .join(&self.config.id),
+            )
+            .env(
+                "RS_WWIDGET_EVENTS",
+                if self.config.input == crate::config::Input::Interactive {
+                    "1"
+                } else {
+                    "0"
+                },
+            );
+        if let Some(sdk) = crate::registry::sdk_directory(&self.config.asset_dir) {
+            command.env("RS_WWIDGET_SDK", sdk);
+        }
+        command.env(
+            "RS_WWIDGET_LAYER",
+            match self.config.layer {
+                crate::config::Layer::Background => "background",
+                crate::config::Layer::Bottom => "bottom",
+                crate::config::Layer::Top => "top",
+                crate::config::Layer::Overlay => "overlay",
+            },
+        );
+        let [x, y] = self.config.position.unwrap_or([64, 96]);
+        command
+            .env("RS_WWIDGET_X", x.to_string())
+            .env("RS_WWIDGET_Y", y.to_string());
+        command.env(
+            "RS_WWIDGET_THEME",
+            self.config
+                .host_theme
+                .unwrap_or(crate::config::Palette::DEFAULT)
+                .as_json()
+                .to_string(),
+        );
+        command.env("RS_WWIDGET_CONTROL_SOCKET", crate::ipc::socket_path());
+        command.env(
+            "RS_WWIDGET_NAMESPACE",
+            self.config.namespace.as_deref().unwrap_or("rs-wwidget"),
+        );
         command.process_group(0);
         let mut child = command.spawn()?;
-        let stdout = child.stdout.take().expect("piped stdout");
-        let flags = unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_GETFL) };
-        if flags < 0
-            || unsafe { libc::fcntl(stdout.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) }
-                < 0
-        {
-            let e = io::Error::last_os_error();
-            self.running = Some(Running {
-                child,
-                stdout,
-                stopping: false,
-            });
-            return Err(e);
+        let stdout = child.stdout.take();
+        let stdin = child.stdin.take();
+        let stderr = child.stderr.take();
+        if let Some(output) = &stdout {
+            let flags = unsafe { libc::fcntl(output.as_raw_fd(), libc::F_GETFL) };
+            if flags < 0
+                || unsafe {
+                    libc::fcntl(output.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK)
+                } < 0
+            {
+                let error = io::Error::last_os_error();
+                self.running = Some(Running {
+                    child,
+                    stdout,
+                    stdin,
+                    stderr,
+                    stopping: false,
+                });
+                return Err(error);
+            }
         }
         self.running = Some(Running {
             child,
             stdout,
+            stdin,
+            stderr,
             stopping: false,
         });
+        if let Some(fd) = self
+            .running
+            .as_ref()
+            .and_then(|r| r.stderr.as_ref())
+            .map(AsRawFd::as_raw_fd)
+        {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        if let Some(fd) = self
+            .running
+            .as_ref()
+            .and_then(|r| r.stdin.as_ref())
+            .map(AsRawFd::as_raw_fd)
+        {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+            if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+        }
+        self.events.clear();
+        self.event_bytes = 0;
+        self.generation += 1;
         self.line.clear();
         self.last_frame = Some(now);
         self.failed = false;
-        self.deadline = now + Duration::from_secs(self.config.timeout_seconds.max(1));
+        self.last_error = None;
+        self.log_wait = None;
+        self.deadline = now
+            + Duration::from_secs(
+                if self.config.render_mode == crate::config::RenderMode::External {
+                    1
+                } else {
+                    self.config.timeout_seconds.max(1)
+                },
+            );
+        if self.send_event(
+            &crate::input::Event::Init {
+                width: self.config.width,
+                height: self.config.height,
+                keyboard: self.config.keyboard,
+                theme: self
+                    .config
+                    .host_theme
+                    .unwrap_or(crate::config::Palette::DEFAULT)
+                    .as_json(),
+            },
+            now,
+        ) {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "initial input handshake failed",
+            ));
+        }
         Ok(())
     }
 
     fn fail(&mut self, reason: &str, now: Instant) -> bool {
+        self.last_error = Some(reason.chars().take(1024).collect());
         if !self.failed {
             eprintln!("plugin {}: {reason}", self.config.id);
             self.failed = true;
@@ -367,6 +831,8 @@ impl Runtime {
             r.stopping = true;
         }
         self.line.clear();
+        self.events.clear();
+        self.event_bytes = 0;
         self.last_frame = None;
         let replacement = Frame::placeholder(&self.config.id, "Unavailable");
         let dirty = self.frame != replacement;
@@ -561,5 +1027,60 @@ mod tests {
             assert_eq!(rt.frame.rows[0].value, "Unavailable");
             assert!(rt.running.as_ref().is_some_and(|r| r.stopping));
         }
+    }
+}
+
+#[cfg(test)]
+mod input_queue_tests {
+    use super::*;
+    #[test]
+    fn unsent_motion_coalesces_without_corrupting_a_partial_event() {
+        let mut runtime = Runtime::new(PluginConfig {
+            enabled: true,
+            input: crate::config::Input::Interactive,
+            protocol: 2,
+            keyboard: true,
+            command: vec!["/bin/sleep".into(), "10".into()],
+            ..PluginConfig::default()
+        });
+        let now = Instant::now();
+        runtime.tick(now);
+        runtime.send_event(
+            &crate::input::Event::Keymap {
+                format: "xkb_v1",
+                keymap: "x".repeat(200_000),
+            },
+            now,
+        );
+        for i in 0..200 {
+            runtime.send_event(
+                &crate::input::Event::Pointer {
+                    kind: crate::input::PointerKind::Motion,
+                    x: i as f64,
+                    y: 10.,
+                    target: None,
+                    local: None,
+                    button: None,
+                    pressed: None,
+                    axis: None,
+                    value: None,
+                    drag_handle: false,
+                },
+                now,
+            );
+        }
+        assert_eq!(runtime.events.len(), 2);
+        assert!(runtime.events.front().unwrap().offset > 0);
+        let event: serde_json::Value =
+            serde_json::from_slice(&runtime.events.back().unwrap().data).unwrap();
+        assert_eq!(event["x"], 199.0);
+        assert_eq!(
+            runtime.event_bytes,
+            runtime
+                .events
+                .iter()
+                .map(|e| e.data.len() - e.offset)
+                .sum::<usize>()
+        );
     }
 }

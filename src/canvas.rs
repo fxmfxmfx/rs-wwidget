@@ -33,6 +33,8 @@ fn background() -> String {
 pub struct Element {
     /// [x, y, width, height], in logical pixels. Each element clips to its box.
     pub bounds: [f64; 4],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(default = "one")]
     pub opacity: f64,
     /// Clockwise degrees, around the normalized origin within bounds.
@@ -86,6 +88,10 @@ pub enum Content {
         wrap: bool,
         #[serde(default)]
         bold: bool,
+        #[serde(default)]
+        italic: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        font: Option<String>,
     },
     Image {
         path: String,
@@ -167,8 +173,37 @@ fn unit(x: f64) -> bool {
     x.is_finite() && (0.0..=1.0).contains(&x)
 }
 impl Element {
+    /// Inverse-transform a pointer into the element's local, rounded clip.
+    /// Image alpha is deliberately not a hit mask.
+    pub fn hit(&self, point: (f64, f64)) -> Option<[f64; 2]> {
+        if self.opacity <= 0.0 || !point.0.is_finite() || !point.1.is_finite() {
+            return None;
+        }
+        let [x, y, w, h] = self.bounds;
+        let [ox, oy] = self.origin;
+        let (sin, cos) = self.rotation.to_radians().sin_cos();
+        let (dx, dy) = (point.0 - x - w * ox, point.1 - y - h * oy);
+        let (lx, ly) = (dx * cos + dy * sin + w * ox, -dx * sin + dy * cos + h * oy);
+        if lx < 0.0 || ly < 0.0 || lx >= w || ly >= h {
+            return None;
+        }
+        let radius = self.clip_radius.min(w / 2.0).min(h / 2.0);
+        let (cx, cy) = (lx.clamp(radius, w - radius), ly.clamp(radius, h - radius));
+        if (lx - cx).powi(2) + (ly - cy).powi(2) > radius * radius {
+            return None;
+        }
+        Some([lx, ly])
+    }
+
     pub fn validate(&self) -> Result<()> {
         let [x, y, w, h] = self.bounds;
+        if self
+            .id
+            .as_ref()
+            .is_some_and(|id| !crate::registry::valid_id(id))
+        {
+            return Err("element id must be 1..64 ASCII letters, digits, _ or -".into());
+        }
         if ![x, y, w, h]
             .iter()
             .all(|n| n.is_finite() && n.abs() <= 8192.0)
@@ -201,11 +236,22 @@ impl Element {
         };
         match &self.content {
             Content::Text {
-                text, size, color, ..
+                text,
+                size,
+                color,
+                font,
+                ..
             } => {
                 if text.chars().count() > 4096 || !size.is_finite() || !(1.0..=512.0).contains(size)
                 {
                     return Err("text limit 4096 characters; size 1..512".into());
+                }
+                if font.as_ref().is_some_and(|font| {
+                    font.trim().is_empty() || font.chars().count() > 128 || font.contains('\0')
+                }) {
+                    return Err(
+                        "font family must be nonempty, at most 128 characters, without NUL".into(),
+                    );
                 }
                 check_color(color)?;
             }
@@ -266,6 +312,9 @@ pub struct Canvas {
     images: RefCell<VecDeque<CachedImage>>,
 }
 impl Canvas {
+    pub fn clear_cache(&self) {
+        self.images.borrow_mut().clear();
+    }
     fn image(&self, path: PathBuf, revision: u64) -> Option<ImageSurface> {
         let mut images = self.images.borrow_mut();
         let key = (path, revision);
@@ -335,10 +384,18 @@ impl Canvas {
                     align,
                     wrap,
                     bold,
+                    italic,
+                    font: family,
                 } => {
                     let layout = create_layout(cr);
                     let mut font = font.clone();
                     font.set_absolute_size(size * pango::SCALE as f64);
+                    if let Some(family) = family {
+                        font.set_family(family);
+                    }
+                    if *italic {
+                        font.set_style(pango::Style::Italic);
+                    }
                     if *bold {
                         font.set_weight(pango::Weight::Bold);
                     }

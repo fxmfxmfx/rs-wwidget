@@ -1,0 +1,10 @@
+version = 2
+id = "qml-example"
+render_mode = "external"
+input = "none"
+command = ["quickshell", "-p", "{widget_dir}/shell.qml"]
+width = 360
+height = 300
+layer = "bottom"
+position = [64, 96]
+locked = false

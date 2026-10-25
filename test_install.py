@@ -24,6 +24,10 @@ class InstallationTest(unittest.TestCase):
                 shutil.copy2(ROOT / name, project / name)
             shutil.copy2(ROOT / 'rs-wwidget', project / 'rs-wwidget')
             shutil.copytree(ROOT / 'widgets', project / 'widgets')
+            shutil.copytree(ROOT / 'sdk', project / 'sdk')
+            cache = project / 'widgets/playground/__pycache__'
+            cache.mkdir(exist_ok=True)
+            (cache / 'fixture.pyc').write_bytes(b'not an installable asset')
             env = dict(os.environ, HOME=str(home),
                        XDG_STATE_HOME=str(home / '.state'),
                        XDG_CONFIG_HOME=str(home / '.config'))
@@ -38,6 +42,10 @@ class InstallationTest(unittest.TestCase):
             self.assertTrue(os.access(share / 'widgets/widget-provider', os.X_OK))
             self.assertTrue(os.access(share / 'widgets/music/music', os.X_OK))
             self.assertTrue((share / 'widgets/network/widget.toml').is_file())
+            self.assertTrue((share / 'sdk/python/rs_wwidget.py').is_file())
+            self.assertTrue((share / 'widgets/playground/main.py').is_file())
+            self.assertFalse((share / 'widgets/playground/__pycache__').exists())
+            self.assertTrue((share / 'sdk/schema/widget.schema.json').is_file())
             poster_frame = share / 'widgets/poster/frame.json'
             poster_image = share / 'widgets/poster/poster.png'
             self.assertTrue(poster_frame.is_file())

@@ -7,6 +7,7 @@ Only Python's standard library and the built rs-wwidget binary are required.
 import array
 import mmap
 import os
+import json
 from pathlib import Path
 import select
 import socket
@@ -468,6 +469,50 @@ class HandoffTests(unittest.TestCase):
                 server.close()
                 if process.stderr:
                     process.stderr.close()
+
+
+class InteractiveRoutingTests(unittest.TestCase):
+    def test_content_click_reaches_provider_and_does_not_begin_drag(self):
+        binary = Path(os.environ.get('RS_WWIDGET_TEST_BINARY', ROOT / 'rs-wwidget'))
+        if not binary.exists(): self.skipTest('build rs-wwidget first')
+        with tempfile.TemporaryDirectory(prefix='wwidget-click-') as temp:
+            root = Path(temp); runtime = root/'runtime'; runtime.mkdir(mode=0o700)
+            home = root/'home'; home.mkdir(); marker = root/'clicked'
+            script = root/'provider.py'
+            script.write_text(
+                'import json,sys\nfrom pathlib import Path\n'
+                'for line in sys.stdin:\n'
+                ' event=json.loads(line)\n'
+                ' if event.get("type")=="pointer" and event.get("pressed") and event.get("target")=="button":\n'
+                f'  Path({str(marker)!r}).write_text("clicked")\n'
+                ' print(json.dumps({"version":2,"elements":[{"bounds":[0,0,160,100],"id":"button","content":{"type":"rect"}}]}),flush=True)\n')
+            cfg=root/'config.toml'
+            cfg.write_text('widgets=[]\n[[plugins]]\nid="click-test"\nenabled=true\nprotocol=2\n'
+                           'input="interactive"\ndecoration="none"\nheight=100\nwidth=160\n'
+                           f'command=["python3",{json.dumps(str(script))}]\n')
+            env={**os.environ,'HOME':str(home),'XDG_CONFIG_HOME':str(home/'.config'),
+                 'XDG_STATE_HOME':str(home/'.state'),'XDG_RUNTIME_DIR':str(runtime),
+                 'WAYLAND_DISPLAY':'wayland-0'}
+            server=FakeWayland(runtime).start()
+            process=subprocess.Popen([str(binary),'--config',str(cfg),'--run'],env=env,
+                                     stdout=subprocess.DEVNULL,stderr=subprocess.PIPE)
+            try:
+                server.wait_for(lambda: server.source_id is not None and bool(server.commits), 'panel not ready')
+                time.sleep(.1)
+                server.enter_and_press(x=40,y=60)
+                server.wait_for(marker.exists,'click did not reach provider')
+                self.assertIsNone(server.overlay_id,'content click incorrectly began dragging')
+                server.release_left()
+                for command, field, expected in [("lock", "locked", True), ("hide", "visible", False), ("show", "visible", True)]:
+                    result = subprocess.run([str(binary), 'widget', 'click-test', command], env=env,
+                                            capture_output=True, text=True, timeout=5)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(json.loads(result.stdout)[field], expected)
+            finally:
+                process.terminate()
+                try: process.wait(timeout=2)
+                except subprocess.TimeoutExpired: process.kill();process.wait()
+                server.close();process.stderr.close()
 
 
 if __name__ == '__main__':

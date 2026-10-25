@@ -1,0 +1,10 @@
+version = 2
+id = "playground"
+protocol = 2
+command = ["python3", "{widget_dir}/main.py"]
+width = 360
+height = 280
+input = "interactive"
+keyboard = true
+drag_height = 42
+watch_files = ["main.py"]

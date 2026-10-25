@@ -21,7 +21,7 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
     let plugin_height: i32 = cfg
         .plugins
         .iter()
-        .filter(|p| p.enabled)
+        .filter(|p| p.hosts_panel())
         .map(|p| p.height + 16)
         .sum();
     let builtin_height = [144, 434, 628]
@@ -44,7 +44,7 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
     let plugin_width = cfg
         .plugins
         .iter()
-        .filter(|p| p.enabled)
+        .filter(|p| p.hosts_panel())
         .map(|p| p.width)
         .max()
         .unwrap_or(300);
@@ -102,7 +102,12 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
         cr.restore()?;
     }
     let mut next_y = plugin_start;
-    for (i, plugin) in cfg.plugins.iter().enumerate().filter(|(_, p)| p.enabled) {
+    for (i, plugin) in cfg
+        .plugins
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| p.hosts_panel())
+    {
         let position = if positioned {
             demo.position(i + 3)
         } else {
@@ -187,7 +192,17 @@ fn run() -> Result<()> {
     match action {
         "--help" | "-h" => {
             println!(
-                "rs-wwidget [--config PATH] [start|stop|restart|toggle|status|remove]\n  --run                       Run in the foreground (default)\n  --list-monitors             List Wayland connector names and logical sizes\n  --list-widgets              List installed widget names\n  --check-config              Validate config and exit\n  --print-default-config      Print current default palette\n  --preview OUTPUT [WALLPAPER] Render PNG without Wayland (PNG/JPEG wallpaper)\n  --preview-grid OUTPUT       Render drag grid preview\n  --benchmark                 Headless rendering CPU benchmark\n  --create-poster IMAGE DIR    Create a static image package (use --width, --height, --rotation, --fit, --opacity, --radius, --input, --filter)\n  --rotate-poster DIR DEGREES  Rotate a single-image poster and resize its canvas\n  --check-frame FILE          Validate v1/v2 JSON without running a widget"
+                "rs-wwidget [--config PATH] [start|stop|restart|toggle|status|remove]\n  --run                       Run in the foreground (default)\n  --list-monitors             List Wayland connector names and logical sizes\n  --list-widgets              List installed widget names\n  --check-config              Validate config and exit\n  --print-default-config      Print current default palette\n  --preview OUTPUT [WALLPAPER] Render PNG without Wayland (PNG/JPEG wallpaper)\n  --preview-grid OUTPUT       Render drag grid preview\n  --benchmark                 Headless rendering CPU benchmark\n  --create-poster IMAGE DIR    Create a static image package (use --width, --height, --rotation, --fit, --opacity, --radius, --input, --filter)\n  --rotate-poster DIR DEGREES  Rotate a single-image poster and resize its canvas\n  --check-frame FILE          Validate v1/v2 JSON without running a widget\n  --print-widget-schema       Print editor schema for package manifests\n  --print-frame-schema        Print editor schema for v2 canvas frames\n  --init-widget DIR [--backend python|javascript|qml]  Create a new provider package\n  --check-widget DIR          Validate a package without launching it\n  widget list                 List live host widget state\n  widget ID COMMAND           status, reload, reset, lock, unlock, hide, show, move X Y, configure JSON, send NAME JSON"
+            );
+            return Ok(());
+        }
+        "--init-widget" => return rs_wwidget::author::create(&args[1..]),
+        "widget" => return rs_wwidget::ipc::cli(&args[1..]),
+        "--check-widget" if args.len() == 2 => {
+            let package = rs_wwidget::registry::resolve_directory(Path::new(&args[1]))?;
+            println!(
+                "Widget OK: {} ({}x{}, {:?})",
+                package.id, package.width, package.height, package.render_mode
             );
             return Ok(());
         }
@@ -203,6 +218,14 @@ fn run() -> Result<()> {
                 frame.elements.len(),
                 frame.rows.len()
             );
+            return Ok(());
+        }
+        "--print-widget-schema" => {
+            print!("{}", include_str!("../sdk/schema/widget.schema.json"));
+            return Ok(());
+        }
+        "--print-frame-schema" => {
+            print!("{}", include_str!("../sdk/schema/frame-v2.schema.json"));
             return Ok(());
         }
         "--print-default-config" => {

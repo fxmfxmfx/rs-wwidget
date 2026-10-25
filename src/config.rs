@@ -19,6 +19,28 @@ pub struct Palette {
     pub grid_background: u32,
 }
 
+impl Palette {
+    pub fn as_json(self) -> serde_json::Value {
+        let mut colors = serde_json::Map::new();
+        for (name, color) in [
+            ("background", self.background),
+            ("foreground", self.foreground),
+            ("muted", self.muted),
+            ("accent", self.accent),
+            ("green", self.green),
+            ("border", self.border),
+            ("bar_background", self.bar_background),
+            ("grid_background", self.grid_background),
+        ] {
+            colors.insert(
+                name.into(),
+                serde_json::Value::String(format!("#{color:06x}")),
+            );
+        }
+        serde_json::Value::Object(colors)
+    }
+}
+
 #[derive(Debug)]
 pub struct Config {
     pub monitor: String,
@@ -41,6 +63,19 @@ pub struct PluginConfig {
     pub width: i32,
     pub decoration: Decoration,
     pub input: Input,
+    pub keyboard: bool,
+    pub drag_height: Option<i32>,
+    pub locked: bool,
+    pub layer: Layer,
+    pub render_mode: RenderMode,
+    pub namespace: Option<String>,
+    pub env: std::collections::BTreeMap<String, String>,
+    pub cwd: Option<String>,
+    pub watch_files: Vec<String>,
+    #[serde(skip)]
+    pub package_path: Option<PathBuf>,
+    #[serde(skip)]
+    pub host_theme: Option<Palette>,
     pub protocol: u32,
     pub position: Option<[i32; 2]>,
     /// Static JSON frame instead of a child process.
@@ -68,9 +103,44 @@ pub enum Input {
     Title,
     All,
     None,
+    Interactive,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Layer {
+    Background,
+    #[default]
+    Bottom,
+    Top,
+    Overlay,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderMode {
+    #[default]
+    Canvas,
+    External,
 }
 
 impl PluginConfig {
+    pub fn hosts_panel(&self) -> bool {
+        self.enabled && self.render_mode == RenderMode::Canvas
+    }
+    pub fn handle_height(&self) -> i32 {
+        if self.locked {
+            return 0;
+        }
+        self.drag_height
+            .unwrap_or(if self.decoration == Decoration::Card {
+                42
+            } else {
+                0
+            })
+            .min(self.height)
+    }
+
     pub fn validate(&self) -> crate::Result<()> {
         let command_ok = !self.command.is_empty()
             && !self.command[0].trim().is_empty()
@@ -87,15 +157,59 @@ impl PluginConfig {
         } else if !command_ok {
             return Err("command must be a nonempty argument array without NUL bytes".into());
         }
-        if !(32..=2048).contains(&self.width)
-            || !(32..=2048).contains(&self.height)
+        if !(32..=8192).contains(&self.width)
+            || !(32..=8192).contains(&self.height)
             || !(1..=86400).contains(&self.restart_seconds)
             || !(1..=86400).contains(&self.timeout_seconds)
             || ![1, 2].contains(&self.protocol)
         {
             return Err(
-                "width/height must be 32..2048, protocol 1 or 2, restart/timeout 1..86400".into(),
+                "width/height must be 32..8192, protocol 1 or 2, restart/timeout 1..86400".into(),
             );
+        }
+        if self
+            .drag_height
+            .is_some_and(|h| !(0..=self.height).contains(&h))
+        {
+            return Err("drag_height must be between 0 and panel height".into());
+        }
+        if self
+            .namespace
+            .as_ref()
+            .is_some_and(|s| !crate::registry::valid_id(s))
+        {
+            return Err("namespace must be a valid 1..64 character ID".into());
+        }
+        if self.watch_files.len() > 64
+            || self
+                .watch_files
+                .iter()
+                .any(|p| p.is_empty() || p.len() > 4096 || p.contains('\0'))
+        {
+            return Err(
+                "watch_files accepts at most 64 nonempty paths, each at most 4096 bytes".into(),
+            );
+        }
+        if self
+            .cwd
+            .as_ref()
+            .is_some_and(|p| p.is_empty() || p.contains('\0'))
+            || self.env.iter().any(|(key, value)| {
+                key.is_empty() || key.contains(['=', '\0']) || value.contains('\0')
+            })
+        {
+            return Err("invalid cwd or environment name/value".into());
+        }
+        if self.input == Input::Interactive && (self.frame.is_some() || self.protocol != 2) {
+            return Err("interactive input requires a command and protocol = 2".into());
+        }
+        if self.render_mode == RenderMode::External
+            && (self.frame.is_some() || self.input != Input::None || self.keyboard)
+        {
+            return Err("external renderers require a command, input='none', and keyboard=false; the external program owns input/surfaces".into());
+        }
+        if self.keyboard && self.input != Input::Interactive {
+            return Err("keyboard requires input = 'interactive'".into());
         }
         Ok(())
     }
@@ -122,6 +236,17 @@ impl Default for PluginConfig {
             width: 300,
             decoration: Decoration::Card,
             input: Input::Title,
+            keyboard: false,
+            drag_height: None,
+            locked: false,
+            layer: Layer::Bottom,
+            render_mode: RenderMode::Canvas,
+            namespace: None,
+            env: std::collections::BTreeMap::new(),
+            cwd: None,
+            watch_files: Vec::new(),
+            package_path: None,
+            host_theme: None,
             protocol: 1,
             position: None,
             frame: None,
@@ -183,7 +308,9 @@ impl Config {
                 .iter()
                 .any(|widget| widget == crate::layout::NAMES[index])
         } else {
-            self.plugins.get(index - 3).is_some_and(|p| p.enabled)
+            self.plugins
+                .get(index - 3)
+                .is_some_and(PluginConfig::hosts_panel)
         }
     }
 
@@ -332,7 +459,7 @@ impl Config {
             .iter()
             .filter(|name| crate::layout::NAMES.contains(&name.as_str()))
             .count()
-            + self.plugins.iter().filter(|p| p.enabled).count()
+            + self.plugins.iter().filter(|p| p.hosts_panel()).count()
     }
 
     pub fn load(path: &Path, explicit: bool) -> crate::Result<Self> {
@@ -402,7 +529,7 @@ mod tests {
             base.replace("'custom'", "'../custom'"),
             base.replace("'custom'", "''"),
             base.replace("['python3', '/tmp/example.py']", "[]"),
-            format!("{base}height = 2049\n"),
+            format!("{base}height = 8193\n"),
             format!("{base}timeout_seconds = 0\n"),
             format!("{base}restart_seconds = 0\n"),
             format!("{base}enabeld = true\n"),

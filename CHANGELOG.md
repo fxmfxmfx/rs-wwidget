@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Add live same-user widget IPC: inspect, reload, configure, move, lock/unlock,
+  hide/show/reset and application-defined events. Persist drag/visibility policy.
+- Add bounded file watching and validate-before-reload semantics; isolate process
+  replacement, clear static image caches and update surfaces without host restart.
+- Support arbitrary surface-owning external renderers, including a real QML/
+  Quickshell example, with shared theme/geometry/state metadata and process supervision.
+- Add Python/JavaScript/QML package scaffolds, atomic provider state storage,
+  bounded stderr diagnostics, package schemas and Ubuntu protocol CI.
+- Raise canvas dimensions to 8192 logical pixels with a 256 MiB per-buffer cap.
+
+- Add opt-in bidirectional stdin events for interactive providers: pointer,
+  transformed element hit testing, scroll and on-demand physical keyboard input.
+- Bound/coalesce nonblocking input queues and isolate broken/slow consumers.
+  Add the playground provider, event-reader SDK and installed SDK assets.
+- Add per-package locking, Wayland layers, working directories and environment
+  overrides while preserving the existing v1 and noninteractive defaults.
+
 - Add per-element rotation, pivot and rounded clipping to canvas v2, image
   alignment/sampling controls and bold text, with matching Python SDK helpers.
 - Add native poster creation and rotation commands that resize the surface to

@@ -33,8 +33,13 @@ def install_file(source, target, mode=0o755):
         Path(name).unlink(missing_ok=True)
 
 install_file(source / 'rs-wwidget', controller)
+(share / 'sdk/python').mkdir(parents=True, exist_ok=True)
+install_file(source / 'sdk/python/rs_wwidget.py', share / 'sdk/python/rs_wwidget.py', 0o644)
+(share / 'sdk/schema').mkdir(parents=True, exist_ok=True)
+for schema in (source / 'sdk/schema').glob('*.json'):
+    install_file(schema, share / 'sdk/schema' / schema.name, 0o644)
 for asset in sorted((source / 'widgets').rglob('*')):
-    if not asset.is_file() or '-build.' in asset.name:
+    if not asset.is_file() or '-build.' in asset.name or '__pycache__' in asset.parts or asset.suffix in ('.pyc', '.pyo'):
         continue
     target = share / 'widgets' / asset.relative_to(source / 'widgets')
     target.parent.mkdir(parents=True, exist_ok=True)

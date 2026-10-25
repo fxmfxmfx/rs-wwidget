@@ -92,6 +92,21 @@ and `widgets = []` hides every panel. Unknown names and duplicates are errors.
 The list does not change panel order or saved positions. Restart after editing.
 Previews and rendering benchmarks also respect this list.
 
+## Addon framework
+
+Create Python, JavaScript or QML packages with `--init-widget DIR --backend python|javascript|qml`.
+Canvas providers receive opt-in mouse/scroll/keyboard events, stable hit targets,
+file watching, state storage, live configuration and same-user IPC controls.
+External providers can use actual Quickshell/QtQuick or another surface-owning
+renderer without a host placeholder panel. Both modes are supervised and disabled
+packages do no work. See the [framework guide](docs/addon-framework.md).
+
+```sh
+rs-wwidget widget counter lock
+rs-wwidget widget counter configure '{"width":420,"layer":"top"}'
+rs-wwidget widget counter send reset '{}'
+```
+
 ## Optional and custom widgets
 
 Enable optional widgets by adding their names to the same list:
@@ -102,6 +117,8 @@ widgets = ["clock", "system", "network", "temperatures", "music", "weather"]
 
 | Name | Content |
 | --- | --- |
+| `qml-example` | Optional real Quickshell/QtQuick renderer with native controls and animation |
+| `playground` | Interactive buttons, slider, hover and optional keyboard (Python) |
 | `poster` | Static PNG/JPEG desktop poster, no provider process |
 | `cpu` | CPU utilization and two-minute history, load, uptime |
 | `network` | RX/TX speed, active interface and traffic history |
@@ -117,7 +134,8 @@ preserves their settings and text data on updates. Development uses `widgets/`
 next to the executable. See the [widget API](docs/widget-api.md) for custom
 packages, the JSON protocol and the optional [Python SDK](sdk/python/rs_wwidget.py).
 
-The shipped providers are native programs. Weather additionally requires `curl`
+The monitoring providers are native programs. The optional `playground` reference
+package uses Python to demonstrate [interactive input](docs/widget-input.md). Weather additionally requires `curl`
 and queries ipwho.is and Open-Meteo only while enabled; explicit coordinates can
 override IP location in its settings. Music uses GIO/MPRIS without `playerctl`.
 Python remains supported for user plugins, with its interpreter's memory cost.
@@ -140,7 +158,9 @@ and [editor schema](sdk/schema/frame-v2.schema.json).
 The host handles themes, scaling, dragging and saved positions by plugin ID.
 Slow or broken plugins are stopped and retried without blocking the event loop.
 Config checking, monitor listing, previews and benchmarks never launch plugins;
-previews show placeholder panels. Restart after editing the configuration.
+command-provider previews show placeholders, while static frames render their
+actual content. Use live reload/file watching for package edits; restart for
+changes to global configuration.
 Legacy `[[plugins]]` definitions remain supported for existing configurations.
 
 ## Additional appearance settings
@@ -173,9 +193,12 @@ the application after changing the configuration.
 
 ## Layer and MangoWM rules
 
-Panels use **`BOTTOM`**; the drag grid uses **`TOP`**.
+Built-in panels and default canvas packages use **`BOTTOM`**; the drag grid uses
+**`TOP`**. Packages may choose another `layer` or `namespace` in their manifest.
 Both use the namespace **`rs-wwidget`**, called `layer_name` in MangoWM.
-The application does not request keyboard focus or reserve layout space.
+Default panels do not request keyboard focus or reserve layout space.
+Interactive canvas packages may explicitly opt into on-demand keyboard focus;
+external renderers control their own windows.
 
 ```ini
 layerrule=noanim:1,noblur:1,noshadow:1,layer_name:rs-wwidget

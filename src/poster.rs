@@ -12,15 +12,15 @@ fn geometry(w: f64, h: f64, angle: f64) -> Result<(i32, i32, [f64; 4])> {
         || !(-360.0..=360.0).contains(&angle)
         || ![w, h]
             .iter()
-            .all(|n| n.is_finite() && (32.0..=2048.0).contains(n))
+            .all(|n| n.is_finite() && (32.0..=8192.0).contains(n))
     {
-        return Err("poster size must be 32..2048 and rotation -360..360 degrees".into());
+        return Err("poster size must be 32..8192 and rotation -360..360 degrees".into());
     }
     let (sin, cos) = angle.to_radians().sin_cos();
     let width = ((w * cos.abs() + h * sin.abs() - 1e-9).ceil() as i32).max(32);
     let height = ((w * sin.abs() + h * cos.abs() - 1e-9).ceil() as i32).max(32);
-    if width > 2048 || height > 2048 {
-        return Err("rotated poster exceeds 2048px; reduce --width or --height".into());
+    if width > 8192 || height > 8192 {
+        return Err("rotated poster exceeds 8192px; reduce --width or --height".into());
     }
     Ok((
         width,

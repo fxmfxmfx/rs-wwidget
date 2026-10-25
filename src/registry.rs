@@ -9,6 +9,31 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub fn sdk_directory(package: &Path) -> Option<PathBuf> {
+    let mut roots: Vec<_> = package
+        .ancestors()
+        .take(4)
+        .map(|p| p.join("sdk/python"))
+        .collect();
+    if let Ok(exe) = env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            roots.push(parent.join("sdk/python"));
+            roots.push(parent.join("../share/rs-wwidget/sdk/python"));
+        }
+        for parent in exe.ancestors().take(5) {
+            if parent.join("Cargo.toml").is_file() {
+                roots.push(parent.join("sdk/python"));
+                break;
+            }
+        }
+    }
+    roots.push(config::xdg("XDG_DATA_HOME", ".local/share").join("rs-wwidget/sdk/python"));
+    roots.push(config::home().join(".local/share/rs-wwidget/sdk/python"));
+    roots
+        .into_iter()
+        .find(|p| p.join("rs_wwidget.py").is_file())
+}
+
 pub fn valid_id(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -38,6 +63,18 @@ fn roots(config_path: Option<&Path>) -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+pub fn resolve_directory(path: &Path) -> Result<PluginConfig> {
+    let directory = fs::canonicalize(path)?;
+    let name = directory
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or("invalid package directory")?;
+    let root = directory
+        .parent()
+        .ok_or("package needs a parent directory")?;
+    resolve_in(name, &[root.to_path_buf()])
 }
 
 pub fn resolve(name: &str, config_path: Option<&Path>) -> Result<PluginConfig> {
@@ -84,9 +121,17 @@ fn resolve_in(name: &str, roots: &[PathBuf]) -> Result<PluginConfig> {
         if command.first().is_some_and(|c| c.starts_with('.')) {
             command[0] = directory.join(&command[0]).to_string_lossy().into_owned();
         }
+        if let Some(cwd) = &mut plugin.cwd {
+            let expanded = cwd.replace("{widget_dir}", &directory.to_string_lossy());
+            *cwd = directory.join(expanded).to_string_lossy().into_owned();
+        }
+        for value in plugin.env.values_mut() {
+            *value = value.replace("{widget_dir}", &directory.to_string_lossy());
+        }
         plugin.id = name.into();
         plugin.command = command;
         plugin.enabled = true;
+        plugin.package_path = Some(directory.join("widget.toml"));
         plugin.asset_dir = directory;
         plugin.load_static()?;
         return Ok(plugin);

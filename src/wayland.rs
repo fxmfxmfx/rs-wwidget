@@ -1,8 +1,11 @@
 //! Direct Wayland transport: one event loop, no GTK, renderer threads, or async runtime.
+mod input_dispatch;
+mod widget_control;
 use cairo::{Context, Format, ImageSurface};
 use rs_wwidget::{
     Result,
     config::{self, Config},
+    input::{Axis, Event as InputEvent, PointerKind},
     layout::{self, Layout, Position},
     metrics::{self, Display, Sampler},
     plugin::Runtime,
@@ -21,8 +24,8 @@ use std::{
 use wayland_client::{
     Connection, Dispatch, Proxy, QueueHandle, WEnum, delegate_noop,
     protocol::{
-        wl_buffer, wl_callback, wl_compositor, wl_output, wl_pointer, wl_region, wl_registry,
-        wl_seat, wl_shm, wl_shm_pool, wl_surface,
+        wl_buffer, wl_callback, wl_compositor, wl_keyboard, wl_output, wl_pointer, wl_region,
+        wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface,
     },
 };
 use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
@@ -104,6 +107,9 @@ impl Buffer {
             .checked_mul(h)
             .filter(|n| *n > 0)
             .ok_or("buffer size overflow")?;
+        if len > 256 * 1024 * 1024 {
+            return Err("panel buffer exceeds 256 MiB; reduce its size or display scale".into());
+        }
         // SAFETY: memfd_create returns a new owned fd or -1; mmap is checked before use.
         let fd = unsafe { libc::memfd_create(c"rs-wwidget".as_ptr(), libc::MFD_CLOEXEC) };
         if fd < 0 {
@@ -186,6 +192,7 @@ struct RetiringOverlay {
 
 struct App {
     config: Config,
+    overrides: rs_wwidget::ipc::Overrides,
     plugins: Vec<(usize, Runtime)>,
     compositor: Option<wl_compositor::WlCompositor>,
     shm: Option<wl_shm::WlShm>,
@@ -196,6 +203,12 @@ struct App {
     geometry: (i32, i32, i32),
     outputs_changed: bool,
     pointer: Option<wl_pointer::WlPointer>,
+    seat: Option<wl_seat::WlSeat>,
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    keyboard_focus: Option<SurfaceId>,
+    keymap: Option<String>,
+    modifiers: [u32; 4],
+    repeat: (i32, i32),
     focus: Option<SurfaceId>,
     pointer_pos: (f64, f64),
     surfaces: Vec<Surface>,
@@ -219,9 +232,14 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, p)| p.enabled)
-            .map(|(i, p)| (i + 3, Runtime::new(p.clone())))
+            .map(|(i, p)| {
+                let mut plugin = p.clone();
+                plugin.host_theme = Some(config.colors);
+                (i + 3, Runtime::new(plugin))
+            })
             .collect();
         Self {
+            overrides: rs_wwidget::ipc::Overrides::default(),
             plugins,
             renderer: Renderer::new(config.colors, config.background_opacity)
                 .with_font_family(&config.font_family)
@@ -236,6 +254,12 @@ impl App {
             geometry: (0, 0, 1),
             outputs_changed: false,
             pointer: None,
+            seat: None,
+            keyboard: None,
+            keyboard_focus: None,
+            keymap: None,
+            modifiers: [0; 4],
+            repeat: (0, 0),
             focus: None,
             pointer_pos: (0.0, 0.0),
             surfaces: Vec::with_capacity(4),
@@ -253,6 +277,10 @@ impl App {
     }
 
     fn create_surface(&mut self, panel: Option<usize>, qh: &QueueHandle<Self>) {
+        if panel.is_some_and(|i| self.is_hidden(i)) {
+            return;
+        }
+
         self.next_id += 1;
         let id = SurfaceId(self.next_id);
         let output = self
@@ -265,18 +293,35 @@ impl App {
         let layer = self.shell.as_ref().unwrap().get_layer_surface(
             &wl,
             Some(&output.proxy),
-            if panel.is_some() {
-                ShellLayer::Bottom
-            } else {
-                ShellLayer::Top
+            match panel {
+                None => ShellLayer::Top,
+                Some(i) if i < 3 => ShellLayer::Bottom,
+                Some(i) => match self.config.plugins[i - 3].layer {
+                    config::Layer::Background => ShellLayer::Background,
+                    config::Layer::Bottom => ShellLayer::Bottom,
+                    config::Layer::Top => ShellLayer::Top,
+                    config::Layer::Overlay => ShellLayer::Overlay,
+                },
             },
-            "rs-wwidget".into(),
+            panel
+                .and_then(|i| i.checked_sub(3))
+                .and_then(|i| self.config.plugins[i].namespace.clone())
+                .unwrap_or_else(|| "rs-wwidget".into()),
             qh,
             id,
         );
         layer.set_anchor(Anchor::Top | Anchor::Left);
         layer.set_exclusive_zone(-1);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+        let keyboard = panel.is_some_and(|i| i >= 3 && self.config.plugins[i - 3].keyboard)
+            && self
+                .shell
+                .as_ref()
+                .is_some_and(|shell| shell.version() >= 4);
+        layer.set_keyboard_interactivity(if keyboard {
+            KeyboardInteractivity::OnDemand
+        } else {
+            KeyboardInteractivity::None
+        });
         let size = panel.map_or((self.geometry.0, self.geometry.1), |i| {
             (self.config.panel_width(i), self.config.panel_height(i))
         });
@@ -287,9 +332,11 @@ impl App {
         wl.set_buffer_scale(scale);
         if let Some(panel) = panel {
             let region = compositor.create_region(qh, ());
+            let locked = self.is_locked(panel);
             match self.config.panel_input(panel) {
+                config::Input::All | config::Input::Title if locked => {}
                 config::Input::Title => region.add(0, 0, size.0, size.1.min(42)),
-                config::Input::All => region.add(0, 0, size.0, size.1),
+                config::Input::All | config::Input::Interactive => region.add(0, 0, size.0, size.1),
                 config::Input::None => {}
             }
             wl.set_input_region(Some(&region));
@@ -362,7 +409,9 @@ impl App {
         if self.selected == Some(chosen)
             && geometry == self.geometry
             && self.surfaces.iter().filter(|s| s.panel.is_some()).count()
-                == self.config.enabled_panel_count()
+                == (0..self.config.panel_count())
+                    .filter(|i| self.config.panel_enabled(*i) && !self.is_hidden(*i))
+                    .count()
             && !initial
         {
             return Ok(());
@@ -456,6 +505,103 @@ impl App {
         self.status();
     }
 
+    fn surface_panel(&self, id: Option<SurfaceId>) -> Option<usize> {
+        self.surfaces
+            .iter()
+            .find(|s| Some(s.id) == id)
+            .and_then(|s| s.panel)
+    }
+
+    fn interactive_panel(&self) -> Option<usize> {
+        self.surface_panel(self.focus)
+            .filter(|i| self.config.panel_input(*i) == config::Input::Interactive)
+    }
+
+    fn keyboard_panel(&self) -> Option<usize> {
+        self.surface_panel(self.keyboard_focus)
+            .filter(|i| *i >= 3 && self.config.plugins[*i - 3].keyboard)
+    }
+
+    fn input_event(&mut self, panel: usize, event: InputEvent) {
+        if let Some((_, runtime)) = self.plugins.iter_mut().find(|(i, _)| *i == panel)
+            && runtime.send_event(&event, Instant::now())
+        {
+            for surface in &mut self.surfaces {
+                if surface.panel == Some(panel) {
+                    surface.dirty = true;
+                }
+            }
+        }
+    }
+
+    fn pointer_event(
+        &mut self,
+        kind: PointerKind,
+        button: Option<(u32, bool)>,
+        scroll: Option<(Axis, f64)>,
+    ) {
+        let Some(panel) = self.interactive_panel() else {
+            return;
+        };
+        let drag_handle = self.pointer_pos.1 < self.drag_height(panel) as f64;
+        let hit = if kind == PointerKind::Leave || drag_handle {
+            None
+        } else {
+            self.plugins
+                .iter()
+                .find(|(i, _)| *i == panel)
+                .and_then(|(_, p)| p.frame().target(self.pointer_pos))
+        };
+        let (target, local) = hit.map_or((None, None), |(id, point)| (Some(id), Some(point)));
+        self.input_event(
+            panel,
+            InputEvent::Pointer {
+                kind,
+                x: self.pointer_pos.0,
+                y: self.pointer_pos.1,
+                target,
+                local,
+                button: button.map(|b| b.0),
+                pressed: button.map(|b| b.1),
+                axis: scroll.map(|s| s.0),
+                value: scroll.map(|s| s.1),
+                drag_handle,
+            },
+        );
+    }
+
+    fn keyboard_state(&mut self) {
+        let Some(panel) = self.keyboard_panel() else {
+            return;
+        };
+        if let Some(keymap) = self.keymap.clone() {
+            self.input_event(
+                panel,
+                InputEvent::Keymap {
+                    format: "xkb_v1",
+                    keymap,
+                },
+            );
+        }
+        self.input_event(
+            panel,
+            InputEvent::RepeatInfo {
+                rate: self.repeat.0,
+                delay: self.repeat.1,
+            },
+        );
+        let [depressed, latched, locked, group] = self.modifiers;
+        self.input_event(
+            panel,
+            InputEvent::Modifiers {
+                depressed,
+                latched,
+                locked,
+                group,
+            },
+        );
+    }
+
     fn begin_drag(&mut self, qh: &QueueHandle<Self>) {
         if self.retiring_overlay.is_some() {
             return;
@@ -472,6 +618,9 @@ impl App {
         else {
             return;
         };
+        if self.is_locked(panel) {
+            return;
+        }
         let p = self.layout.position(panel);
         self.drag = Some(Drag {
             panel,
@@ -718,7 +867,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for App {
                     s.outputs_changed = true;
                 }
                 "wl_seat" if s.pointer.is_none() => {
-                    let _: wl_seat::WlSeat = reg.bind(name, version.min(5), qh, ());
+                    s.seat = Some(reg.bind(name, version.min(5), qh, ()));
                 }
                 _ => {}
             },
@@ -879,84 +1028,6 @@ impl Dispatch<wl_buffer::WlBuffer, Arc<AtomicBool>> for App {
         }
     }
 }
-impl Dispatch<wl_seat::WlSeat, ()> for App {
-    fn event(
-        s: &mut Self,
-        seat: &wl_seat::WlSeat,
-        event: wl_seat::Event,
-        _: &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_seat::Event::Capabilities {
-            capabilities: WEnum::Value(c),
-        } = event
-        {
-            if c.contains(wl_seat::Capability::Pointer) && s.pointer.is_none() {
-                s.pointer = Some(seat.get_pointer(qh, ()));
-            }
-            if !c.contains(wl_seat::Capability::Pointer) {
-                if let Some(p) = s.pointer.take() {
-                    p.release();
-                }
-                s.focus = None;
-                s.finish_drag(false);
-            }
-        }
-    }
-}
-impl Dispatch<wl_pointer::WlPointer, ()> for App {
-    fn event(
-        s: &mut Self,
-        _: &wl_pointer::WlPointer,
-        event: wl_pointer::Event,
-        _: &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        match event {
-            wl_pointer::Event::Enter {
-                surface,
-                surface_x,
-                surface_y,
-                ..
-            } => {
-                s.focus = surface.data::<SurfaceId>().copied();
-                s.pointer_pos = (surface_x, surface_y);
-            }
-            wl_pointer::Event::Leave { surface, .. } => {
-                if s.focus == surface.data::<SurfaceId>().copied() {
-                    s.focus = None;
-                }
-            }
-            wl_pointer::Event::Motion {
-                surface_x,
-                surface_y,
-                ..
-            } => {
-                s.pointer_pos = (surface_x, surface_y);
-                s.motion();
-            }
-            wl_pointer::Event::Button {
-                button,
-                state: WEnum::Value(state),
-                ..
-            } => {
-                if state == wl_pointer::ButtonState::Pressed {
-                    if s.drag.is_some() {
-                        s.finish_drag(false);
-                    } else if button == 0x110 {
-                        s.begin_drag(qh);
-                    }
-                } else if button == 0x110 && s.drag.is_some() {
-                    s.motion();
-                    s.finish_drag(true);
-                }
-            }
-            _ => {}
-        }
-    }
-}
 delegate_noop!(App: ignore wl_compositor::WlCompositor);
 delegate_noop!(App: ignore wl_shm::WlShm);
 delegate_noop!(App: ignore wl_shm_pool::WlShmPool);
@@ -998,6 +1069,13 @@ pub fn run(config: Config, list: bool) -> Result<()> {
     if app.compositor.is_none() || app.shm.is_none() || app.shell.is_none() {
         return Err("Compositor requires wl_compositor, wl_shm and wlr-layer-shell support".into());
     }
+    if app.config.plugins.iter().any(|p| p.enabled && p.keyboard)
+        && app.shell.as_ref().is_some_and(|shell| shell.version() < 4)
+    {
+        eprintln!(
+            "on-demand keyboard input requires wlr-layer-shell v4; continuing with pointer input only"
+        );
+    }
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     std::fs::DirBuilder::new()
         .recursive(true)
@@ -1018,6 +1096,11 @@ pub fn run(config: Config, list: bool) -> Result<()> {
         return Err(e.into());
     }
     rs_wwidget::instance::record(&mut lock)?;
+    let control = rs_wwidget::ipc::Server::bind(rs_wwidget::ipc::socket_path())?;
+    match rs_wwidget::ipc::Overrides::load(&app.state_dir.join("widget-controls.json")) {
+        Ok(overrides) => app.overrides = overrides,
+        Err(error) => eprintln!("Ignoring invalid widget control state: {error}"),
+    }
     // SA_RESTART is deliberately off: SIGTERM interrupts the idle poll immediately.
     unsafe {
         let mut action: libc::sigaction = std::mem::zeroed();
@@ -1045,13 +1128,70 @@ pub fn run(config: Config, list: bool) -> Result<()> {
             {
                 app.finish_drag(false);
             }
+            for _ in 0..16 {
+                let Some((request, peer)) = control.receive() else {
+                    break;
+                };
+                let result = request.and_then(|r| app.control(r, &qh).map_err(|e| e.to_string()));
+                control.reply(&peer, result);
+            }
+            let mut reconfigured = Vec::new();
+            let mut keyboard_restarted = false;
+            let keyboard_panel = app.keyboard_panel();
             for (panel, plugin) in &mut app.plugins {
+                let generation = plugin.generation();
+                let config_generation = plugin.config_generation();
                 if plugin.tick(now) {
                     for surface in &mut app.surfaces {
                         if surface.panel.or_else(|| app.drag.map(|d| d.panel)) == Some(*panel) {
                             surface.dirty = true;
                         }
                     }
+                }
+                if config_generation != plugin.config_generation() {
+                    reconfigured.push((*panel, plugin.config().clone()));
+                }
+                if Some(*panel) == keyboard_panel && generation != plugin.generation() {
+                    keyboard_restarted = true;
+                }
+            }
+            if !reconfigured.is_empty() {
+                app.finish_drag(false);
+                app.renderer.clear_images();
+                for (panel, config) in &reconfigured {
+                    app.config.plugins[*panel - 3] = config.clone();
+                }
+                app.layout
+                    .update_sizes(&app.config, app.geometry.0, app.geometry.1);
+                for (panel, _) in reconfigured {
+                    if app.surface_panel(app.focus) == Some(panel) {
+                        app.focus = None;
+                    }
+                    if app.surface_panel(app.keyboard_focus) == Some(panel) {
+                        app.keyboard_focus = None;
+                    }
+                    app.surfaces.retain(|s| s.panel != Some(panel));
+                    if app.config.panel_enabled(panel) {
+                        app.create_surface(Some(panel), &qh);
+                    }
+                }
+                if app.keyboard.is_none()
+                    && app.config.plugins.iter().any(|p| p.enabled && p.keyboard)
+                    && let Some(seat) = &app.seat
+                {
+                    app.keyboard = Some(seat.get_keyboard(&qh, ()));
+                }
+            }
+            if keyboard_restarted {
+                app.keyboard_state();
+                if let Some(panel) = keyboard_panel {
+                    app.input_event(
+                        panel,
+                        InputEvent::KeyboardFocus {
+                            focused: true,
+                            keys: Vec::new(),
+                        },
+                    );
                 }
             }
             app.redraw(&qh)?;
@@ -1082,30 +1222,44 @@ pub fn run(config: Config, list: bool) -> Result<()> {
                 events,
                 revents: 0,
             };
-            let n = if app.plugins.is_empty() {
-                unsafe { libc::poll(&mut fd, 1, timeout) }
-            } else {
-                poll_fds.clear();
-                poll_fds.push(fd);
-                for (_, plugin) in &app.plugins {
-                    if let Some(plugin_fd) = plugin.poll_fd() {
-                        poll_fds.push(libc::pollfd {
-                            fd: plugin_fd,
-                            events: libc::POLLIN,
-                            revents: 0,
-                        });
-                    }
+            poll_fds.clear();
+            poll_fds.push(fd);
+            poll_fds.push(libc::pollfd {
+                fd: control.fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            });
+            for (_, plugin) in &app.plugins {
+                if let Some(stderr_fd) = plugin.poll_stderr_fd() {
+                    poll_fds.push(libc::pollfd {
+                        fd: stderr_fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    });
                 }
-                let n = unsafe {
-                    libc::poll(
-                        poll_fds.as_mut_ptr(),
-                        poll_fds.len() as libc::nfds_t,
-                        timeout,
-                    )
-                };
-                fd = poll_fds[0];
-                n
+                if let Some(write_fd) = plugin.poll_write_fd() {
+                    poll_fds.push(libc::pollfd {
+                        fd: write_fd,
+                        events: libc::POLLOUT,
+                        revents: 0,
+                    });
+                }
+                if let Some(read_fd) = plugin.poll_fd() {
+                    poll_fds.push(libc::pollfd {
+                        fd: read_fd,
+                        events: libc::POLLIN,
+                        revents: 0,
+                    });
+                }
+            }
+            let n = unsafe {
+                libc::poll(
+                    poll_fds.as_mut_ptr(),
+                    poll_fds.len() as libc::nfds_t,
+                    timeout,
+                )
             };
+            fd = poll_fds[0];
             if n < 0 {
                 let e = std::io::Error::last_os_error();
                 drop(guard);

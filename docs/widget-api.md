@@ -69,7 +69,7 @@ timeout_seconds = 60
 ```
 
 The manifest has no `enabled` field: selecting `"hello"` in the main
-configuration enables it. `height` and optional `width` must be 32–2048 pixels; restart and timeout
+configuration enables it. `height` and optional `width` must be 32–8192 pixels; restart and timeout
 values must be 1–86,400 seconds. The default widget content width is 300
 pixels; v2 supports custom dimensions. Keep package settings and data files beside `widget.toml`; resolve
 their paths from `{widget_dir}` or your program's package directory. Commands
@@ -98,7 +98,8 @@ for package settings and control commands.
 
 Widgets are persistent processes. They write newline-delimited UTF-8 JSON to
 stdout and flush each complete frame. An unchanged frame is a valid heartbeat.
-Keep logs on stderr; the host discards it. The host sets
+Keep logs on stderr; the host retains a bounded tail, accessible with
+`rs-wwidget widget ID status`. The host sets
 `RS_WWIDGET_PROTOCOL=1` in the child environment.
 
 ```json

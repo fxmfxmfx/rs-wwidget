@@ -34,6 +34,10 @@ impl Renderer {
         }
     }
 
+    pub fn clear_images(&self) {
+        self.canvas.clear_cache();
+    }
+
     pub fn with_language(mut self, language: Language) -> Self {
         self.labels = language.labels();
         self

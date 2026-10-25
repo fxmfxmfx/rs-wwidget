@@ -48,7 +48,7 @@ impl Layout {
         let column_width = config
             .plugins
             .iter()
-            .filter(|p| p.enabled)
+            .filter(|p| p.hosts_panel())
             .map(|p| p.width + 20)
             .max()
             .unwrap_or(320);
@@ -71,7 +71,7 @@ impl Layout {
                     },
                     |[x, y]| Position { x, y },
                 );
-                if p.enabled {
+                if p.hosts_panel() {
                     next_y[column] += (p.height + 31) / 16 * 16;
                 }
                 (p.id.clone(), p.height, position, p.width)
@@ -93,6 +93,15 @@ impl Layout {
         } else {
             self.extra[index - 3].2 = position;
         }
+    }
+    pub fn update_sizes(&mut self, config: &crate::config::Config, w: i32, h: i32) {
+        for (id, height, _, width) in &mut self.extra {
+            if let Some(plugin) = config.plugins.iter().find(|p| p.id == *id) {
+                *height = plugin.height;
+                *width = plugin.width;
+            }
+        }
+        self.constrain(w, h);
     }
     pub fn constrain(&mut self, w: i32, h: i32) {
         for (p, height) in self.pos.iter_mut().zip(HEIGHTS) {

@@ -35,3 +35,21 @@ class CanvasSchemaTests(unittest.TestCase):
         ]:
             with self.subTest(element=element):
                 self.assertTrue(list(self.validator.iter_errors({'version':2, 'elements':[element]})))
+
+@unittest.skipIf(Draft202012Validator is None, 'optional jsonschema package is not installed')
+class ManifestSchemaTests(unittest.TestCase):
+    def test_bundled_manifests_match_editor_schema(self):
+        try: import tomllib
+        except ImportError: self.skipTest('tomllib requires Python 3.11+')
+        root=Path(__file__).parent
+        schema=json.loads((root/'sdk/schema/widget.schema.json').read_text())
+        Draft202012Validator.check_schema(schema)
+        validator=Draft202012Validator(schema)
+        for path in (root/'widgets').glob('*/widget.toml'):
+            with self.subTest(path=path): validator.validate(tomllib.loads(path.read_text()))
+
+    def test_invalid_interactive_and_external_combinations_fail(self):
+        root=Path(__file__).parent
+        validator=Draft202012Validator(json.loads((root/'sdk/schema/widget.schema.json').read_text()))
+        for values in [dict(input='interactive'),dict(keyboard=True),dict(render_mode='external'),dict(input='none',enabled=True)]:
+            self.assertTrue(list(validator.iter_errors(dict(version=2,id='sample',command=['program'],**values))))
