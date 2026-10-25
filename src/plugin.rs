@@ -320,7 +320,7 @@ impl Runtime {
         {
             return Err("configure cannot change id/version/enabled".into());
         }
-        let original = std::fs::read_to_string(&path)?;
+        let original = crate::config::read_text(&path, 65_536)?;
         let mut fields: toml::Table = toml::from_str(&original)?;
         for (key, value) in options {
             if value.is_null() {

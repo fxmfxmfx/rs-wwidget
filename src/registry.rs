@@ -87,7 +87,7 @@ fn resolve_in(name: &str, roots: &[PathBuf]) -> Result<PluginConfig> {
     }
     for root in roots {
         let path = root.join(name).join("widget.toml");
-        let text = match fs::read_to_string(&path) {
+        let text = match config::read_text(&path, 65_536) {
             Ok(text) => text,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(format!("{}: {e}", path.display()).into()),

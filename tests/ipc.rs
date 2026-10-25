@@ -63,7 +63,7 @@ fn real_datagram_channel_replies_without_blocking() {
         .send_to(br#"{"op":"status","id":null}"#, root.join("control.sock"))
         .unwrap();
     let (request, peer) = server.receive().unwrap();
-    assert!(matches!(request.unwrap(), Request::Status { id: None }));
+    assert!(matches!(request.unwrap(), Request::Status { id: None, .. }));
     server.reply(&peer, Ok(serde_json::json!({"hello":true})));
     let mut buf = [0u8; 1024];
     let n = client.recv(&mut buf).unwrap();

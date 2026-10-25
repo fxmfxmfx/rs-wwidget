@@ -5,6 +5,21 @@ use std::{
     path::{Path, PathBuf},
 };
 
+pub(crate) fn read_text(path: &Path, limit: usize) -> std::io::Result<String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    fs::File::open(path)?
+        .take((limit + 1) as u64)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("file exceeds {limit} bytes: {}", path.display()),
+        ));
+    }
+    String::from_utf8(bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 pub const DEFAULT_FONT_FAMILY: &str = "MxPlus IBM VGA 8x16";
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -463,7 +478,7 @@ impl Config {
     }
 
     pub fn load(path: &Path, explicit: bool) -> crate::Result<Self> {
-        match fs::read_to_string(path) {
+        match read_text(path, 1_048_576) {
             Ok(text) => Self::parse_at(&text, Some(path))
                 .map_err(|e| format!("{}: {e}", path.display()).into()),
             Err(e) if !explicit && e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),

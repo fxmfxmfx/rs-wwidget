@@ -121,7 +121,7 @@ pub fn create(args: &[String]) -> Result<()> {
 pub fn rotate(directory: &Path, angle: f64) -> Result<()> {
     let directory = fs::canonicalize(directory)?;
     let manifest_path = directory.join("widget.toml");
-    let manifest = fs::read_to_string(&manifest_path)?;
+    let manifest = config::read_text(&manifest_path, 65_536)?;
     let mut fields: toml::Table = toml::from_str(&manifest)?;
     let mut definition = fields.clone();
     let version = definition.remove("version").and_then(|v| v.as_integer());

@@ -50,21 +50,44 @@ impl App {
             "visible":if external {None}else{Some(self.config.panel_enabled(panel) && !self.is_hidden(panel))},"locked":self.is_locked(panel),
             "position":[position.x,position.y],"size":[self.config.panel_width(panel),self.config.panel_height(panel)],"provider":provider})
     }
+    pub(super) fn list_status(&self, offset: usize, limit: usize) -> serde_json::Value {
+        let total = self.config.panel_count();
+        let start = offset.min(total);
+        let end = start.saturating_add(limit.clamp(1, 32)).min(total);
+        let widgets: Vec<_> = (start..end)
+            .map(|panel| {
+                let mut status = self.control_status(panel);
+                if let Some(provider) = status.get_mut("provider").and_then(|v| v.as_object_mut()) {
+                    provider.remove("stderr_tail");
+                    if let Some(error) = provider.get("last_error").and_then(|v| v.as_str()) {
+                        provider.insert(
+                            "last_error".into(),
+                            serde_json::Value::String(error.chars().take(128).collect()),
+                        );
+                    }
+                }
+                status
+            })
+            .collect();
+        serde_json::json!({"widgets":widgets,"total":total,"next_offset":if end<total {Some(end)}else{None}})
+    }
+
     pub(super) fn control(
         &mut self,
         request: rs_wwidget::ipc::Request,
         qh: &QueueHandle<Self>,
     ) -> Result<serde_json::Value> {
         use rs_wwidget::ipc::Request;
-        if let Request::Status { id: None } = request {
-            return Ok(serde_json::Value::Array(
-                (0..self.config.panel_count())
-                    .map(|i| self.control_status(i))
-                    .collect(),
-            ));
+        if let Request::Status {
+            id: None,
+            offset,
+            limit,
+        } = &request
+        {
+            return Ok(self.list_status(offset.unwrap_or(0), limit.unwrap_or(32)));
         }
         let id = match &request {
-            Request::Status { id: Some(id) }
+            Request::Status { id: Some(id), .. }
             | Request::Reload { id }
             | Request::Configure { id, .. }
             | Request::Reset { id }
@@ -218,5 +241,30 @@ impl App {
         }
         self.status();
         Ok(self.control_status(panel))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn widget_lists_are_paged_and_oversized_offsets_are_safe() {
+        let mut config = Config::default();
+        for i in 0..80 {
+            config.plugins.push(config::PluginConfig {
+                id: format!("widget-{i}"),
+                ..config::PluginConfig::default()
+            });
+        }
+        let mut app = App::new(config);
+        app.layout = Layout::defaults(1920, 1080).with_plugins(&app.config, 1920, 1080);
+        let page = app.list_status(0, usize::MAX);
+        assert_eq!(page["widgets"].as_array().unwrap().len(), 32);
+        assert_eq!(page["next_offset"], 32);
+        assert_eq!(page["total"], 83);
+        assert!(serde_json::to_vec(&page).unwrap().len() < rs_wwidget::ipc::MAX_REPLY);
+        let empty = app.list_status(usize::MAX, 32);
+        assert!(empty["widgets"].as_array().unwrap().is_empty());
+        assert!(empty["next_offset"].is_null());
     }
 }

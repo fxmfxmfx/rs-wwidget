@@ -15,11 +15,14 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 pub const MAX_MESSAGE: usize = 16_384;
+pub const MAX_REPLY: usize = 65_536;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Status {
         id: Option<String>,
+        offset: Option<usize>,
+        limit: Option<usize>,
     },
     Reload {
         id: String,
@@ -136,7 +139,7 @@ impl Server {
             Err(error) => serde_json::json!({"ok":false,"error":error}),
         };
         if let Ok(bytes) = serde_json::to_vec(&value) {
-            if bytes.len() <= MAX_MESSAGE {
+            if bytes.len() <= MAX_REPLY {
                 let _ = self.socket.send_to(&bytes, peer);
             } else {
                 let _ = self.socket.send_to(
@@ -190,9 +193,9 @@ pub fn call(request: &Request) -> Result<serde_json::Value> {
         .connect(endpoint)
         .map_err(|e| format!("host control unavailable: {e}; start rs-wwidget in this session"))?;
     client.socket.send(&bytes)?;
-    let mut response = [0; MAX_MESSAGE + 1];
+    let mut response = [0; MAX_REPLY + 1];
     let size = client.socket.recv(&mut response)?;
-    if size > MAX_MESSAGE {
+    if size > MAX_REPLY {
         return Err("oversized control response".into());
     }
     let value: serde_json::Value = serde_json::from_slice(&response[..size])?;
@@ -207,9 +210,10 @@ pub fn call(request: &Request) -> Result<serde_json::Value> {
 }
 pub fn cli(args: &[String]) -> Result<()> {
     let request = match args {
-        [op] if op == "list" => Request::Status { id: None },
+        [op] if op == "list" => Request::Status { id: None, offset:None, limit:None },
+        [op,offset] if op=="list"=>Request::Status{id:None,offset:Some(offset.parse()?),limit:None},
         [id, op] if op == "status" => Request::Status {
-            id: Some(id.clone()),
+            id: Some(id.clone()), offset:None, limit:None,
         },
         [id,op] if op=="reset"=>Request::Reset{id:id.clone()},
         [id,op,options] if op=="configure"=>Request::Configure{id:id.clone(),options:serde_json::from_str(options)?},
@@ -233,7 +237,7 @@ pub fn cli(args: &[String]) -> Result<()> {
             data: serde_json::from_str(data)?,
         },
         _ => return Err(
-            "widget list | widget ID status|reload|reset|lock|unlock|hide|show|move X Y|configure JSON|send NAME JSON"
+            "widget list [OFFSET] | widget ID status|reload|reset|lock|unlock|hide|show|move X Y|configure JSON|send NAME JSON"
                 .into(),
         ),
     };

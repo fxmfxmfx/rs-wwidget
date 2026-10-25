@@ -57,6 +57,7 @@ See [canvas protocol](widget-api-v2.md), [input events](widget-input.md),
 
 ```sh
 rs-wwidget widget list
+rs-wwidget widget list 32  # Next page, if next_offset is 32
 rs-wwidget widget counter status
 rs-wwidget widget counter reload
 rs-wwidget widget counter lock
@@ -69,6 +70,8 @@ rs-wwidget widget counter send reset '{}'
 rs-wwidget widget counter configure '{"width":420,"layer":"top","locked":true}'
 ```
 
+- `list` returns `{widgets, total, next_offset}` with at most 32 summaries per page;
+  logs are omitted from summaries. Use the returned offset for the next page.
 - `status` reports process generation, reload state, errors and stderr. External
   visibility is null: the host does not observe that program's windows.
 - `reload` validates a package, stops/reaps only its old process group, and starts
@@ -162,13 +165,14 @@ control({"op": "send", "id": "counter", "name": "reset", "data": {}})
 ```
 
 IPC uses a mode-0600 Unix datagram socket inside the host state directory, with
-16 KiB messages and bounded per-loop request processing. The host never waits
+16 KiB requests, 64 KiB replies and bounded per-loop request processing. The host never waits
 for a control client. It is a local same-user interface, not a network service.
 SDK/CLI clients time out and clean up their reply endpoints. Invalid requests
 receive errors and do not execute shell commands.
 
 ## Limits and renderer ownership
 
+Package manifests are capped at 64 KiB and the main configuration at 1 MiB.
 Canvas panels support 32..8192 logical pixels per dimension. Each physical SHM
 buffer is capped at 256 MiB; reduce dimensions on high-scale outputs if needed.
 Frames remain limited to 64 KiB / 256 elements; image files to 32 MiB; decoded

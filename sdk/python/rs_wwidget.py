@@ -367,8 +367,8 @@ def control(request, timeout=2.0):
             os.chmod(path, 0o600)
             client.connect(endpoint)
             client.send(data)
-            response = client.recv(16385)
-    if len(response) > 16384:
+            response = client.recv(65537)
+    if len(response) > 65536:
         raise ValueError("oversized control response")
     result = json.loads(response)
     if not result.get("ok"):

@@ -151,3 +151,13 @@ fn live_configuration_validates_before_writing_and_applies_on_tick() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn oversized_manifests_fail_with_a_bounded_file_error() {
+    let root = root();
+    let dir = root.join("sample");
+    fs::write(dir.join("widget.toml"), vec![b'x'; 65_537]).unwrap();
+    let error = registry::resolve_directory(&dir).unwrap_err().to_string();
+    assert!(error.contains("file exceeds 65536 bytes"), "{error}");
+    fs::remove_dir_all(root).unwrap();
+}
