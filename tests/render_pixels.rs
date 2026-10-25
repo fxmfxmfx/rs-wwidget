@@ -133,6 +133,7 @@ fn panels_match_frozen_legacy_pixels() {
 fn plugin_content_is_clipped_and_scales_with_its_panel() {
     use rs_wwidget::plugin::{Frame, Row};
     let frame = Frame {
+        elements: Vec::new(),
         version: 1,
         title: "Очень длинный заголовок ".repeat(4),
         rows: vec![

@@ -40,6 +40,10 @@ static void grid_frame(cairo_t *cr,int w,int h,int panel,int x,int y) {
     cairo_save(cr);cairo_translate(cr,x,y);reference_render_panel(cr,panel);
     reference_color(cr,reference_ACCENT,1);cairo_set_line_width(cr,2);cairo_rectangle(cr,1,1,PANEL_WIDTH-2,panel_heights[panel]-2);cairo_stroke(cr);cairo_restore(cr);
 }
+/* Stream to the inherited pipe; /dev/stdout is not available in all sandboxes. */
+static cairo_status_t write_png(void *closure, const unsigned char *data, unsigned int length) {
+    return fwrite(data, 1, length, (FILE *)closure) == length ? CAIRO_STATUS_SUCCESS : CAIRO_STATUS_WRITE_ERROR;
+}
 int main(int argc,char **argv) {
     if(argc!=5) return 2;
     const char *kind=argv[1]; int mode=atoi(argv[2]), scale=atoi(argv[3]), index=atoi(argv[4]);
@@ -50,6 +54,6 @@ int main(int argc,char **argv) {
     if(!strcmp(kind,"panel")) reference_render_panel(cr,index);
     else if(!strcmp(kind,"grid")) grid_frame(cr,w,h,index,320,64);
     else return 2;
-    cairo_surface_write_to_png(s,"/dev/stdout");
-    cairo_destroy(cr);cairo_surface_destroy(s);return 0;
+    cairo_status_t status = cairo_surface_write_to_png_stream(s,write_png,stdout);
+    cairo_destroy(cr);cairo_surface_destroy(s);return status == CAIRO_STATUS_SUCCESS ? 0 : 1;
 }

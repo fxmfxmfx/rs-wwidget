@@ -3,7 +3,6 @@ use crate::{
     Result,
     config::{self, PluginConfig},
 };
-use serde::Deserialize;
 use std::{
     collections::BTreeSet,
     env, fs,
@@ -41,17 +40,6 @@ fn roots(config_path: Option<&Path>) -> Vec<PathBuf> {
     roots
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Manifest {
-    version: u32,
-    id: String,
-    command: Vec<String>,
-    height: i32,
-    restart_seconds: u64,
-    timeout_seconds: u64,
-}
-
 pub fn resolve(name: &str, config_path: Option<&Path>) -> Result<PluginConfig> {
     resolve_in(name, &roots(config_path))
 }
@@ -67,35 +55,41 @@ fn resolve_in(name: &str, roots: &[PathBuf]) -> Result<PluginConfig> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
             Err(e) => return Err(format!("{}: {e}", path.display()).into()),
         };
-        let manifest: Manifest =
+        let mut fields: toml::Table =
             toml::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-        if manifest.version != 1
-            || manifest.id != name
-            || manifest.command.is_empty()
-            || manifest.command[0].trim().is_empty()
-            || manifest.command.iter().any(|s| s.contains('\0'))
-            || !(80..=800).contains(&manifest.height)
-            || !(1..=86400).contains(&manifest.restart_seconds)
-            || !(1..=86400).contains(&manifest.timeout_seconds)
-        {
-            return Err(format!("{}: invalid widget manifest", path.display()).into());
+        let version = fields.remove("version").and_then(|v| v.as_integer());
+        if !matches!(version, Some(1 | 2)) || fields.contains_key("enabled") {
+            return Err(format!(
+                "{}: manifest version must be 1 or 2; select packages using widgets",
+                path.display()
+            )
+            .into());
         }
+        let mut plugin: PluginConfig = toml::Value::Table(fields)
+            .try_into()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        if plugin.id != name {
+            return Err(
+                format!("{}: manifest id must match directory name", path.display()).into(),
+            );
+        }
+        plugin
+            .validate()
+            .map_err(|e| format!("{}: {e}", path.display()))?;
         let directory = fs::canonicalize(path.parent().unwrap())?;
-        let mut command = manifest.command;
+        let mut command = plugin.command;
         for argument in &mut command {
             *argument = argument.replace("{widget_dir}", &directory.to_string_lossy());
         }
-        if command[0].starts_with('.') {
+        if command.first().is_some_and(|c| c.starts_with('.')) {
             command[0] = directory.join(&command[0]).to_string_lossy().into_owned();
         }
-        return Ok(PluginConfig {
-            id: name.into(),
-            command,
-            enabled: true,
-            height: manifest.height,
-            restart_seconds: manifest.restart_seconds,
-            timeout_seconds: manifest.timeout_seconds,
-        });
+        plugin.id = name.into();
+        plugin.command = command;
+        plugin.enabled = true;
+        plugin.asset_dir = directory;
+        plugin.load_static()?;
+        return Ok(plugin);
     }
     Err(
         format!("unknown widget '{name}'; install its widget.toml package or use --list-widgets")

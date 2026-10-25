@@ -38,6 +38,12 @@ class InstallationTest(unittest.TestCase):
             self.assertTrue(os.access(share / 'widgets/widget-provider', os.X_OK))
             self.assertTrue(os.access(share / 'widgets/music/music', os.X_OK))
             self.assertTrue((share / 'widgets/network/widget.toml').is_file())
+            poster_frame = share / 'widgets/poster/frame.json'
+            poster_image = share / 'widgets/poster/poster.png'
+            self.assertTrue(poster_frame.is_file())
+            self.assertTrue(poster_image.is_file())
+            poster_frame.write_text('{"version":2,"elements":[]}\n')
+            poster_image.write_bytes(b'user poster fixture')
             widget_settings = share / 'widgets/network/settings.toml'
             widget_settings.write_text('interface = "custom-interface"\n')
             widget_data = share / 'widgets/network/networkcustomnotes.txt'
@@ -64,6 +70,8 @@ class InstallationTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(user_config.read_text(), 'monitor = "DP-1"\n[colors]\naccent = "#123456"\n')
             self.assertEqual(widget_settings.read_text(), 'interface = "custom-interface"\n')
+            self.assertEqual(poster_frame.read_text(), '{"version":2,"elements":[]}\n')
+            self.assertEqual(poster_image.read_bytes(), b'user poster fixture')
             self.assertEqual(widget_data.read_text(), 'Build=Passed\n')
             self.assertTrue(all(not (share / 'widgets' / retired).exists()
                                 for retired in ('agenda', 'summary', 'timer')))

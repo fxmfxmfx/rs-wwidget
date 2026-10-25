@@ -1,5 +1,9 @@
 # Widget packages and API v1
 
+For images, custom layouts/sizes, transparent decoration-free panels and static
+packages without child processes, see [API v2](widget-api-v2.md).
+The v1 protocol below remains supported.
+
 rs-wwidget can display its built-in panels and optional widget packages. A
 package is a directory containing a `widget.toml` manifest, an executable
 command, and optionally package-specific files such as `settings.toml` or a
@@ -65,9 +69,9 @@ timeout_seconds = 60
 ```
 
 The manifest has no `enabled` field: selecting `"hello"` in the main
-configuration enables it. `height` must be 80–800 pixels; restart and timeout
-values must be 1–86,400 seconds. The widget content width is fixed at 300
-pixels. Keep package settings and data files beside `widget.toml`; resolve
+configuration enables it. `height` and optional `width` must be 32–2048 pixels; restart and timeout
+values must be 1–86,400 seconds. The default widget content width is 300
+pixels; v2 supports custom dimensions. Keep package settings and data files beside `widget.toml`; resolve
 their paths from `{widget_dir}` or your program's package directory. Commands
 inherit the host environment and working directory. Arguments do not expand
 `~`, environment variables, or shell operators.

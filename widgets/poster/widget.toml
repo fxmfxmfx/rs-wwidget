@@ -1,0 +1,9 @@
+version = 2
+id = "poster"
+protocol = 2
+frame = "frame.json"
+width = 360
+height = 480
+decoration = "none"
+input = "none"
+position = [64, 96]

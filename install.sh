@@ -38,7 +38,7 @@ for asset in sorted((source / 'widgets').rglob('*')):
         continue
     target = share / 'widgets' / asset.relative_to(source / 'widgets')
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and (asset.name == 'settings.toml' or asset.suffix == '.txt'):
+    if target.exists() and (asset.name in ('settings.toml', 'frame.json') or asset.suffix in ('.txt', '.png', '.jpg', '.jpeg')):
         continue
     install_file(asset, target, 0o755 if os.access(asset, os.X_OK) else 0o644)
 # Retired bundled packages are removed on upgrade; user packages under config stay separate.

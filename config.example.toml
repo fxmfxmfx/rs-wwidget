@@ -2,7 +2,7 @@
 # Run rs-wwidget --list-monitors to see connector names. Restart after editing.
 monitor = "auto"
 # Built-in: clock, calendar, system. Optional: cpu, network, temperatures,
-# music, weather. Add names here to enable them.
+# music, weather, poster. Add names here to enable them.
 # Widget-specific settings live in widgets/<name>/settings.toml.
 # Use [] to hide all. Restart after editing.
 widgets = ["clock", "calendar", "system"]

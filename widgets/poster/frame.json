@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "elements": [
+    {
+      "bounds": [0, 0, 360, 480],
+      "content": {"type": "image", "path": "poster.png", "fit": "contain"}
+    }
+  ]
+}

@@ -11,6 +11,7 @@ const HEIGHTS: [i32; 3] = [144, 274, 178];
 const OFFSETS: [f64; 3] = [0.0, 160.0, 450.0];
 pub struct Renderer {
     palette: Palette,
+    canvas: crate::canvas::Canvas,
     labels: &'static Labels,
     background_opacity: f64,
     fonts: [FontDescription; 2],
@@ -26,6 +27,7 @@ impl Renderer {
         };
         Self {
             palette,
+            canvas: crate::canvas::Canvas::default(),
             labels: Language::En.labels(),
             background_opacity,
             fonts: [make_font(16), make_font(64)],
@@ -305,6 +307,34 @@ impl Renderer {
         Ok(())
     }
 
+    /// v1 rows remain pixel-identical at 300px; v2 elements use logical coordinates.
+    pub fn widget(
+        &self,
+        cr: &Context,
+        config: &crate::config::PluginConfig,
+        frame: &crate::plugin::Frame,
+    ) -> Result<(), cairo::Error> {
+        cr.save()?;
+        cr.rectangle(0.0, 0.0, config.width as f64, config.height as f64);
+        cr.clip();
+        let card = config.decoration == crate::config::Decoration::Card;
+        if card || !frame.rows.is_empty() {
+            cr.save()?;
+            cr.scale(config.width as f64 / WIDTH, 1.0);
+            self.plugin_content(cr, config.height, frame, card)?;
+            cr.restore()?;
+        }
+        self.canvas.draw(
+            cr,
+            &frame.elements,
+            &config.asset_dir,
+            self.palette,
+            &self.fonts[0],
+        )?;
+        cr.restore()?;
+        Ok(())
+    }
+
     /// Shared presentation keeps plugins independent of Cairo, fonts and Wayland.
     pub fn plugin(
         &self,
@@ -312,26 +342,40 @@ impl Renderer {
         height: i32,
         frame: &crate::plugin::Frame,
     ) -> Result<(), cairo::Error> {
+        self.plugin_content(cr, height, frame, true)
+    }
+
+    fn plugin_content(
+        &self,
+        cr: &Context,
+        height: i32,
+        frame: &crate::plugin::Frame,
+        card: bool,
+    ) -> Result<(), cairo::Error> {
         cr.save()?;
         cr.rectangle(0.0, 0.0, WIDTH, height as f64);
         cr.clip();
-        self.card(cr, 0, height);
+        if card {
+            self.card(cr, 0, height);
+        }
         let layout = create_layout(cr);
         layout.set_single_paragraph_mode(true);
         layout.set_ellipsize(pango::EllipsizeMode::End);
         layout.set_height(-1);
-        self.text(
-            cr,
-            &layout,
-            &frame.title,
-            24.0,
-            20.0,
-            16,
-            self.palette.muted,
-            224,
-            Alignment::Left,
-        );
-        let mut y = 50.0;
+        if card {
+            self.text(
+                cr,
+                &layout,
+                &frame.title,
+                24.0,
+                20.0,
+                16,
+                self.palette.muted,
+                224,
+                Alignment::Left,
+            );
+        }
+        let mut y = if card { 50.0 } else { 0.0 };
         for row in &frame.rows {
             let row_height = 26.0
                 + if row.fraction.is_some() { 8.0 } else { 0.0 }
@@ -523,7 +567,7 @@ impl Palette {
     };
 }
 
-fn set_color(cr: &Context, hex: u32, alpha: f64) {
+pub(crate) fn set_color(cr: &Context, hex: u32, alpha: f64) {
     cr.set_source_rgba(
         ((hex >> 16) & 255) as f64 / 255.0,
         ((hex >> 8) & 255) as f64 / 255.0,

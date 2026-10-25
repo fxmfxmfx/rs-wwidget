@@ -38,8 +38,78 @@ pub struct PluginConfig {
     pub command: Vec<String>,
     pub enabled: bool,
     pub height: i32,
+    pub width: i32,
+    pub decoration: Decoration,
+    pub input: Input,
+    pub protocol: u32,
+    pub position: Option<[i32; 2]>,
+    /// Static JSON frame instead of a child process.
+    pub frame: Option<String>,
+    #[serde(skip)]
+    pub asset_dir: PathBuf,
+    #[serde(skip)]
+    pub static_data: Option<crate::plugin::Frame>,
     pub restart_seconds: u64,
     pub timeout_seconds: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Decoration {
+    #[default]
+    Card,
+    None,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Input {
+    #[default]
+    Title,
+    All,
+    None,
+}
+
+impl PluginConfig {
+    pub fn validate(&self) -> crate::Result<()> {
+        let command_ok = !self.command.is_empty()
+            && !self.command[0].trim().is_empty()
+            && !self.command.iter().any(|s| s.contains('\0'));
+        if self.frame.is_some() {
+            if !self.command.is_empty()
+                || self
+                    .frame
+                    .as_ref()
+                    .is_some_and(|p| p.trim().is_empty() || p.contains('\0'))
+            {
+                return Err("choose exactly one source: command or frame".into());
+            }
+        } else if !command_ok {
+            return Err("command must be a nonempty argument array without NUL bytes".into());
+        }
+        if !(32..=2048).contains(&self.width)
+            || !(32..=2048).contains(&self.height)
+            || !(1..=86400).contains(&self.restart_seconds)
+            || !(1..=86400).contains(&self.timeout_seconds)
+            || ![1, 2].contains(&self.protocol)
+        {
+            return Err(
+                "width/height must be 32..2048, protocol 1 or 2, restart/timeout 1..86400".into(),
+            );
+        }
+        Ok(())
+    }
+
+    pub fn load_static(&mut self) -> crate::Result<()> {
+        if let Some(path) = &self.frame {
+            let path = self.asset_dir.join(path);
+            self.static_data = Some(
+                crate::plugin::Frame::load(&path)
+                    .map_err(|e| format!("{}: {e}", path.display()))?,
+            );
+        }
+        Ok(())
+    }
 }
 
 impl Default for PluginConfig {
@@ -49,6 +119,14 @@ impl Default for PluginConfig {
             command: Vec::new(),
             enabled: false,
             height: 178,
+            width: 300,
+            decoration: Decoration::Card,
+            input: Input::Title,
+            protocol: 1,
+            position: None,
+            frame: None,
+            asset_dir: PathBuf::from("."),
+            static_data: None,
             restart_seconds: 30,
             timeout_seconds: 60,
         }
@@ -132,22 +210,16 @@ impl Config {
             {
                 return Err("plugins require unique IDs of 1..64 ASCII letters, digits, _ or - (excluding builtin names)".into());
             }
-            if plugin.command.is_empty()
-                || plugin.command[0].trim().is_empty()
-                || plugin.command.iter().any(|s| s.contains('\0'))
-            {
-                return Err(format!(
-                    "plugin {}: command must be a nonempty argument array without NUL bytes",
-                    plugin.id
-                )
-                .into());
-            }
-            if !(80..=800).contains(&plugin.height)
-                || !(1..=86400).contains(&plugin.restart_seconds)
-                || !(1..=86400).contains(&plugin.timeout_seconds)
-            {
-                return Err(format!("plugin {}: height must be 80..800, restart_seconds and timeout_seconds 1..86400", plugin.id).into());
-            }
+            plugin
+                .validate()
+                .map_err(|e| format!("plugin {}: {e}", plugin.id))?;
+        }
+        for plugin in &mut cfg.plugins {
+            plugin.asset_dir = path
+                .and_then(Path::parent)
+                .unwrap_or(Path::new("."))
+                .to_path_buf();
+            plugin.load_static()?;
         }
         if let Some(widgets) = raw.widgets {
             for (i, widget) in widgets.iter().enumerate() {
@@ -223,6 +295,22 @@ impl Config {
 
     pub fn panel_count(&self) -> usize {
         3 + self.plugins.len()
+    }
+
+    pub fn panel_width(&self, index: usize) -> i32 {
+        if index < 3 {
+            crate::layout::WIDTH
+        } else {
+            self.plugins[index - 3].width
+        }
+    }
+
+    pub fn panel_input(&self, index: usize) -> Input {
+        if index < 3 {
+            Input::Title
+        } else {
+            self.plugins[index - 3].input
+        }
     }
 
     pub fn panel_height(&self, index: usize) -> i32 {
@@ -308,7 +396,7 @@ mod tests {
             base.replace("'custom'", "'../custom'"),
             base.replace("'custom'", "''"),
             base.replace("['python3', '/tmp/example.py']", "[]"),
-            format!("{base}height = 801\n"),
+            format!("{base}height = 2049\n"),
             format!("{base}timeout_seconds = 0\n"),
             format!("{base}restart_seconds = 0\n"),
             format!("{base}enabeld = true\n"),

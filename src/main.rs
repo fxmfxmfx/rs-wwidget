@@ -24,11 +24,40 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
         .filter(|p| p.enabled)
         .map(|p| p.height + 16)
         .sum();
+    let builtin_height = [144, 434, 628]
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| cfg.panel_enabled(*i))
+        .map(|(_, h)| h)
+        .max()
+        .unwrap_or(0);
+    let plugin_start = if builtin_height > 0 {
+        builtin_height + 16
+    } else {
+        0
+    };
+    let preview_height = if plugin_height > 0 {
+        plugin_start + plugin_height - 16
+    } else {
+        628
+    };
+    let plugin_width = cfg
+        .plugins
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| p.width)
+        .max()
+        .unwrap_or(300);
+    let preview_width = if builtin_height > 0 {
+        plugin_width.max(300)
+    } else {
+        plugin_width
+    };
     let (w, h) = image.as_ref().map_or(
         if grid {
             (1920, 1080)
         } else {
-            (300, 628 + plugin_height)
+            (preview_width, preview_height)
         },
         |i| (i.width() as i32, i.height() as i32),
     );
@@ -47,13 +76,13 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
         let background = ImageSurface::create_for_data(bytes, Format::ARgb32, w, h, w * 4)?;
         cr.set_source_surface(&background, 0.0, 0.0)?;
         cr.paint()?;
-        cr.translate((w - 340) as f64, 64.0);
     }
     let renderer = Renderer::new(cfg.colors, cfg.background_opacity)
         .with_font_family(&cfg.font_family)
         .with_language(cfg.language);
     let state = Sampler::default().sample();
     let mut demo = Layout::defaults(w, h).with_plugins(&cfg, w, h);
+    let positioned = grid || wallpaper.is_some();
     if grid {
         demo.pos[1] = layout::dragged(demo.pos[1], (0.0, 0.0), (-480.0, -32.0), w, h, 1);
         renderer.grid(&cr, w, h)?;
@@ -63,7 +92,7 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
             continue;
         }
         cr.save()?;
-        let (x, y) = if grid {
+        let (x, y) = if positioned {
             (demo.pos[i].x, demo.pos[i].y)
         } else {
             (0, y)
@@ -72,19 +101,20 @@ fn preview(cfg: Config, path: &Path, wallpaper: Option<&Path>, grid: bool) -> Re
         renderer.panel(&cr, i, &state)?;
         cr.restore()?;
     }
-    let mut next_y = 644;
+    let mut next_y = plugin_start;
     for (i, plugin) in cfg.plugins.iter().enumerate().filter(|(_, p)| p.enabled) {
-        let position = if grid {
+        let position = if positioned {
             demo.position(i + 3)
         } else {
             layout::Position { x: 0, y: next_y }
         };
         cr.save()?;
         cr.translate(position.x as f64, position.y as f64);
-        renderer.plugin(
+        let placeholder = rs_wwidget::plugin::Frame::placeholder(&plugin.id, "Preview");
+        renderer.widget(
             &cr,
-            plugin.height,
-            &rs_wwidget::plugin::Frame::placeholder(&plugin.id, "Preview"),
+            plugin,
+            plugin.static_data.as_ref().unwrap_or(&placeholder),
         )?;
         cr.restore()?;
         next_y += plugin.height + 16;

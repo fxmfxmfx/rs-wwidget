@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add backward-compatible canvas API v2 with layered images, text, rounded
+  rectangles, lines, bars and graphs, RGBA/theme colors and element opacity.
+- Support custom panel sizes, decoration and input modes, initial positions and
+  size-aware dragging/damage. Add the `poster` package for a click-through static
+  PNG/JPEG without a provider process, with a bounded decoded-image cache.
+- Extend the Python SDK with canvas helpers, static-frame generation and input
+  validation. Render static packages in previews and preserve their frame/image
+  files when reinstalling. Document the v2 protocol and poster setup.
+
 - Add widget packages enabled by name in the existing `widgets` list. Executable
   arguments, dimensions and restart policies belong to each package's manifest;
   source-specific choices live in the package's settings file.

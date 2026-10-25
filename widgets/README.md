@@ -15,6 +15,7 @@ Package details, controls, and local settings are described below.
 
 | Name | What it shows | Package-specific notes |
 | --- | --- | --- |
+| `poster` | Static PNG/JPEG without decoration or a provider | [Setup](poster/README.md) |
 | `network` | Interface receive/transmit rates | [Settings](network/README.md) |
 | `temperatures` | CPU/GPU temperatures and supported fan speeds | [Settings](temperatures/README.md) |
 | `music` | MPRIS player status and playback controls | [Controls](music/README.md) |

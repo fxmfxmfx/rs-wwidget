@@ -10,7 +10,7 @@ pub struct Position {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
     pub pos: [Position; 3],
-    extra: Vec<(String, i32, Position)>,
+    extra: Vec<(String, i32, Position, i32)>,
 }
 pub fn snap(value: f64, extent: i32, size: i32, inset: i32) -> i32 {
     let max = (extent - size).max(0) / 16 * 16;
@@ -45,7 +45,14 @@ impl Layout {
         } else {
             0
         };
-        let columns = ((w - reserved - 96) / 320).max(1) as usize;
+        let column_width = config
+            .plugins
+            .iter()
+            .filter(|p| p.enabled)
+            .map(|p| p.width + 20)
+            .max()
+            .unwrap_or(320);
+        let columns = ((w - reserved - 96) / column_width).max(1) as usize;
         let mut next_y = vec![64; columns];
         self.extra = config
             .plugins
@@ -57,14 +64,17 @@ impl Layout {
                     .min_by_key(|(_, y)| **y)
                     .map(|(i, _)| i)
                     .unwrap();
-                let position = Position {
-                    x: 48 + column as i32 * 320,
-                    y: next_y[column],
-                };
+                let position = p.position.map_or(
+                    Position {
+                        x: 48 + column as i32 * column_width,
+                        y: next_y[column],
+                    },
+                    |[x, y]| Position { x, y },
+                );
                 if p.enabled {
                     next_y[column] += (p.height + 31) / 16 * 16;
                 }
-                (p.id.clone(), p.height, position)
+                (p.id.clone(), p.height, position, p.width)
             })
             .collect();
         self.constrain(w, h);
@@ -89,8 +99,8 @@ impl Layout {
             p.x = snap(p.x as f64, w, WIDTH, 0);
             p.y = snap(p.y as f64, h, height, 48);
         }
-        for (_, height, p) in &mut self.extra {
-            p.x = snap(p.x as f64, w, WIDTH, 0);
+        for (_, height, p, width) in &mut self.extra {
+            p.x = snap(p.x as f64, w, *width, 0);
             p.y = snap(p.y as f64, h, *height, 48);
         }
     }
@@ -128,7 +138,7 @@ impl Layout {
         for (name, p) in NAMES.iter().zip(self.pos) {
             writeln!(text, "[{name}]\nx={}\ny={}\n", p.x, p.y).unwrap();
         }
-        for (name, _, p) in &self.extra {
+        for (name, _, p, _) in &self.extra {
             writeln!(text, "[{name}]\nx={}\ny={}\n", p.x, p.y).unwrap();
         }
         crate::config::atomic_write(path, text.as_bytes())
@@ -152,8 +162,19 @@ pub fn dragged_height(
     h: i32,
     height: i32,
 ) -> Position {
+    dragged_size(initial, start, point, (w, h), (WIDTH, height))
+}
+pub fn dragged_size(
+    initial: Position,
+    start: (f64, f64),
+    point: (f64, f64),
+    extent: (i32, i32),
+    size: (i32, i32),
+) -> Position {
+    let (w, h) = extent;
+    let (width, height) = size;
     Position {
-        x: snap(initial.x as f64 + point.0 - start.0, w, WIDTH, 0),
+        x: snap(initial.x as f64 + point.0 - start.0, w, width, 0),
         y: snap(initial.y as f64 + point.1 - start.1, h, height, 48),
     }
 }
@@ -161,11 +182,14 @@ pub fn damage(p: Position, index: usize, w: i32, h: i32) -> (i32, i32, i32, i32)
     damage_height(p, HEIGHTS[index], w, h)
 }
 pub fn damage_height(p: Position, height: i32, w: i32, h: i32) -> (i32, i32, i32, i32) {
+    damage_size(p, WIDTH, height, w, h)
+}
+pub fn damage_size(p: Position, width: i32, height: i32, w: i32, h: i32) -> (i32, i32, i32, i32) {
     let (x, y) = ((p.x - 1).max(0), (p.y - 1).max(0));
     (
         x,
         y,
-        (p.x + WIDTH + 1).min(w).saturating_sub(x).max(0),
+        (p.x + width + 1).min(w).saturating_sub(x).max(0),
         (p.y + height + 1).min(h).saturating_sub(y).max(0),
     )
 }

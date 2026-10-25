@@ -102,6 +102,7 @@ widgets = ["clock", "system", "network", "temperatures", "music", "weather"]
 
 | Name | Content |
 | --- | --- |
+| `poster` | Static PNG/JPEG desktop poster, no provider process |
 | `cpu` | CPU utilization and two-minute history, load, uptime |
 | `network` | RX/TX speed, active interface and traffic history |
 | `temperatures` | CPU/GPU maximum temperatures and fan speeds |
@@ -128,6 +129,9 @@ Enabled plugins pay for their own process and panel buffers. Host RSS/PSS in
 `status.json` does not include child processes; count those separately.
 
 Panels support text, label/value rows, progress bars and small history graphs.
+[API v2](docs/widget-api-v2.md) adds free-layout text, PNG/JPEG images, rounded
+rectangles, lines, bars and graphs, custom sizes, decoration/input modes and
+static JSON packages without child processes. See the [poster setup](widgets/poster/README.md).
 The host handles themes, scaling, dragging and saved positions by plugin ID.
 Slow or broken plugins are stopped and retried without blocking the event loop.
 Config checking, monitor listing, previews and benchmarks never launch plugins;

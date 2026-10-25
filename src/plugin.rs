@@ -16,8 +16,12 @@ const READ_BUDGET: usize = 65_536;
 #[serde(deny_unknown_fields)]
 pub struct Frame {
     pub version: u32,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub rows: Vec<Row>,
+    #[serde(default)]
+    pub elements: Vec<crate::canvas::Element>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]
@@ -34,9 +38,22 @@ impl Frame {
         if data.len() > MAX_FRAME {
             return Err("plugin frame exceeds 65536 bytes".into());
         }
-        let frame: Self = serde_json::from_slice(data)?;
-        if frame.version != 1 {
-            return Err("plugin frame version must be 1".into());
+        let value: serde_json::Value = serde_json::from_slice(data)?;
+        let v1_fields = value.get("title").is_some()
+            && value.get("rows").is_some()
+            && value.get("elements").is_none();
+        let frame: Self = serde_json::from_value(value)?;
+        if ![1, 2].contains(&frame.version) {
+            return Err("plugin frame version must be 1 or 2".into());
+        }
+        if frame.version == 1 && !v1_fields {
+            return Err("v1 requires title and rows; elements require v2".into());
+        }
+        if frame.elements.len() > 256 {
+            return Err("at most 256 elements per frame".into());
+        }
+        for element in &frame.elements {
+            element.validate()?;
         }
         if frame.title.chars().count() > 128 {
             return Err("plugin title exceeds 128 characters".into());
@@ -68,9 +85,19 @@ impl Frame {
         Ok(frame)
     }
 
+    pub fn load(path: &std::path::Path) -> crate::Result<Self> {
+        use std::io::Read;
+        let mut data = Vec::new();
+        std::fs::File::open(path)?
+            .take((MAX_FRAME + 1) as u64)
+            .read_to_end(&mut data)?;
+        Self::parse(&data)
+    }
+
     pub fn placeholder(title: &str, value: &str) -> Self {
         Self {
             version: 1,
+            elements: Vec::new(),
             title: title.chars().take(128).collect(),
             rows: vec![Row {
                 label: String::new(),
@@ -102,13 +129,22 @@ impl Runtime {
     pub fn new(config: PluginConfig) -> Self {
         let now = Instant::now();
         let title = config.id.clone();
+        let frame = config
+            .static_data
+            .clone()
+            .unwrap_or_else(|| Frame::placeholder(&title, "Starting…"));
+        let deadline = if config.frame.is_some() {
+            now + Duration::from_secs(86400)
+        } else {
+            now
+        };
         Self {
             config,
-            frame: Frame::placeholder(&title, "Starting…"),
+            frame,
             running: None,
             line: Vec::new(),
             last_frame: None,
-            deadline: now,
+            deadline,
             failed: false,
             restart_at: None,
         }
@@ -120,6 +156,10 @@ impl Runtime {
 
     /// Starts due children and enforces liveness. Returns whether display data changed.
     pub fn tick(&mut self, now: Instant) -> bool {
+        if self.config.frame.is_some() {
+            self.deadline = now + Duration::from_secs(86400);
+            return false;
+        }
         if !self.config.enabled {
             return false;
         }
@@ -252,7 +292,10 @@ impl Runtime {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .env("RS_WWIDGET_PROTOCOL", "1");
+            .env("RS_WWIDGET_PROTOCOL", self.config.protocol.to_string())
+            .env("RS_WWIDGET_WIDTH", self.config.width.to_string())
+            .env("RS_WWIDGET_HEIGHT", self.config.height.to_string())
+            .env("RS_WWIDGET_ASSET_DIR", &self.config.asset_dir);
         command.process_group(0);
         let mut child = command.spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");
@@ -333,6 +376,7 @@ mod tests {
             height: 100,
             restart_seconds: 1,
             timeout_seconds: 2,
+            ..PluginConfig::default()
         }
     }
 
@@ -341,7 +385,7 @@ mod tests {
         let bytes = br#"{"version":1,"title":"T","rows":[{"label":"CPU","value":"42%","fraction":0.42,"history":[0,1]}]}"#;
         let frame = Frame::parse(bytes).unwrap();
         assert_eq!(frame.rows[0].label, "CPU");
-        assert!(Frame::parse(br#"{"version":2,"title":"T","rows":[]}"#).is_err());
+        assert!(Frame::parse(br#"{"version":99,"title":"T","rows":[]}"#).is_err());
         assert!(Frame::parse(br#"{"version":1,"title":"T","extra":0,"rows":[]}"#).is_err());
         assert!(
             Frame::parse(

@@ -3,7 +3,7 @@ use cairo::{Context, Format, ImageSurface};
 use rs_wwidget::{
     Result,
     config::{self, Config},
-    layout::{self, Layout, Position, WIDTH},
+    layout::{self, Layout, Position},
     metrics::{self, Display, Sampler},
     plugin::Runtime,
     render::{self, Renderer},
@@ -278,16 +278,20 @@ impl App {
         layer.set_exclusive_zone(-1);
         layer.set_keyboard_interactivity(KeyboardInteractivity::None);
         let size = panel.map_or((self.geometry.0, self.geometry.1), |i| {
-            (WIDTH, self.config.panel_height(i))
+            (self.config.panel_width(i), self.config.panel_height(i))
         });
         layer.set_size(size.0 as u32, size.1 as u32);
         let pos = panel.map_or(Position::default(), |i| self.layout.position(i));
         layer.set_margin(pos.y, 0, 0, pos.x);
         let scale = self.geometry.2;
         wl.set_buffer_scale(scale);
-        if panel.is_some() {
+        if let Some(panel) = panel {
             let region = compositor.create_region(qh, ());
-            region.add(0, 0, WIDTH, 42);
+            match self.config.panel_input(panel) {
+                config::Input::Title => region.add(0, 0, size.0, size.1.min(42)),
+                config::Input::All => region.add(0, 0, size.0, size.1),
+                config::Input::None => {}
+            }
             wl.set_input_region(Some(&region));
             region.destroy();
         }
@@ -498,13 +502,15 @@ impl App {
             point.1 -= drag.initial.y as f64;
         }
         drag.last_activity = Instant::now();
-        let next = layout::dragged_height(
+        let next = layout::dragged_size(
             drag.initial,
             drag.start,
             point,
-            self.geometry.0,
-            self.geometry.1,
-            self.config.panel_height(drag.panel),
+            (self.geometry.0, self.geometry.1),
+            (
+                self.config.panel_width(drag.panel),
+                self.config.panel_height(drag.panel),
+            ),
         );
         if next != drag.preview {
             drag.preview = next;
@@ -562,14 +568,16 @@ impl App {
             let damage = if s.panel.is_none() && !b.fresh {
                 b.preview.zip(self.drag).map(|(old, drag)| {
                     [
-                        layout::damage_height(
+                        layout::damage_size(
                             old,
+                            self.config.panel_width(drag.panel),
                             self.config.panel_height(drag.panel),
                             s.size.0,
                             s.size.1,
                         ),
-                        layout::damage_height(
+                        layout::damage_size(
                             drag.preview,
+                            self.config.panel_width(drag.panel),
                             self.config.panel_height(drag.panel),
                             s.size.0,
                             s.size.1,
@@ -623,7 +631,7 @@ impl App {
                     cr.rectangle(
                         1.0,
                         1.0,
-                        (WIDTH - 2) as f64,
+                        (self.config.panel_width(d.panel) - 2) as f64,
                         (self.config.panel_height(d.panel) - 2) as f64,
                     );
                     cr.stroke()?;
@@ -1141,7 +1149,7 @@ fn draw_panel(
     if panel < 3 {
         renderer.panel(cr, panel, display)?;
     } else if let Some((_, plugin)) = plugins.iter().find(|(i, _)| *i == panel) {
-        renderer.plugin(cr, config.panel_height(panel), plugin.frame())?;
+        renderer.widget(cr, &config.plugins[panel - 3], plugin.frame())?;
     }
     Ok(())
 }
