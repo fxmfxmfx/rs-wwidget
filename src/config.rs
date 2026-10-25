@@ -219,7 +219,6 @@ impl Config {
                 .and_then(Path::parent)
                 .unwrap_or(Path::new("."))
                 .to_path_buf();
-            plugin.load_static()?;
         }
         if let Some(widgets) = raw.widgets {
             for (i, widget) in widgets.iter().enumerate() {
@@ -240,6 +239,13 @@ impl Config {
                 }
             }
             cfg.widgets = widgets;
+        }
+        for plugin in cfg
+            .plugins
+            .iter_mut()
+            .filter(|p| p.enabled && p.static_data.is_none())
+        {
+            plugin.load_static()?;
         }
         if let Some(family) = raw.font_family {
             if family.trim().is_empty() {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add per-element rotation, pivot and rounded clipping to canvas v2, image
+  alignment/sampling controls and bold text, with matching Python SDK helpers.
+- Add native poster creation and rotation commands that resize the surface to
+  preserve tilted corners, and a standalone JSON frame validation command.
+- Publish an optional editor JSON Schema. Reject duplicate protocol fields and
+  avoid reading disabled legacy static frames.
+
 - Add backward-compatible canvas API v2 with layered images, text, rounded
   rectangles, lines, bars and graphs, RGBA/theme colors and element opacity.
 - Support custom panel sizes, decoration and input modes, initial positions and

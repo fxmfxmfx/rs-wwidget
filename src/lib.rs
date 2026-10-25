@@ -5,6 +5,7 @@ pub mod layout;
 pub mod locale;
 pub mod metrics;
 pub mod plugin;
+pub mod poster;
 pub mod registry;
 pub mod render;
 

@@ -3,6 +3,8 @@
   "elements": [
     {
       "bounds": [0, 0, 360, 480],
+      "rotation": 0,
+      "clip_radius": 0,
       "content": {"type": "image", "path": "poster.png", "fit": "contain"}
     }
   ]

@@ -39,4 +39,24 @@ class CanvasSDKTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             encode_canvas([Text("я" * 4096, (0,0,100,100))] * 10)
 
+
+class CanvasTransformTests(unittest.TestCase):
+    def test_image_transforms_encode_explicitly(self):
+        item = json.loads(encode_canvas([Image("photo.png", (32, 32, 100, 200),
+            rotation=-15, origin=(0, 1), clip_radius=12, position=(1, 0), filter="nearest")]))["elements"][0]
+        self.assertEqual(item["rotation"], -15)
+        self.assertEqual(item["origin"], [0, 1])
+        self.assertEqual(item["clip_radius"], 12)
+        self.assertEqual(item["content"]["position"], [1, 0])
+        self.assertEqual(item["content"]["filter"], "nearest")
+
+    def test_invalid_transforms_and_missing_content_fail(self):
+        for item in [Rect((0,0,10,10), rotation=361), Rect((0,0,10,10), origin=(2,0)),
+                     Rect((0,0,10,10), clip_radius=-1), Image("x", (0,0,10,10), filter="fast"),
+                     Image("x", (0,0,10,10), position=(-1,0)),
+                     Element((0,0,10,10), {"type":"image"})]:
+            with self.subTest(item=item), self.assertRaises((ValueError, TypeError)):
+                encode_canvas([item])
+
+
 if __name__ == '__main__': unittest.main()

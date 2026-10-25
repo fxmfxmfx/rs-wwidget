@@ -2,7 +2,7 @@
 use crate::{Result, config::Palette};
 use cairo::{Context, Format, ImageSurface};
 use pangocairo::functions::{create_layout, show_layout};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
     collections::VecDeque,
@@ -11,6 +11,9 @@ use std::{
 
 fn one() -> f64 {
     1.0
+}
+fn center() -> [f64; 2] {
+    [0.5, 0.5]
 }
 fn font_size() -> f64 {
     16.0
@@ -25,17 +28,24 @@ fn background() -> String {
     "bar_background".into()
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Element {
     /// [x, y, width, height], in logical pixels. Each element clips to its box.
     pub bounds: [f64; 4],
     #[serde(default = "one")]
     pub opacity: f64,
+    /// Clockwise degrees, around the normalized origin within bounds.
+    #[serde(default)]
+    pub rotation: f64,
+    #[serde(default = "center")]
+    pub origin: [f64; 2],
+    #[serde(default)]
+    pub clip_radius: f64,
     pub content: Content,
 }
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Fit {
     #[default]
@@ -43,7 +53,7 @@ pub enum Fit {
     Cover,
     Stretch,
 }
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Align {
     #[default]
@@ -52,7 +62,16 @@ pub enum Align {
     Right,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Sampling {
+    Nearest,
+    #[default]
+    Bilinear,
+    Best,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Content {
     Text {
@@ -65,6 +84,8 @@ pub enum Content {
         align: Align,
         #[serde(default)]
         wrap: bool,
+        #[serde(default)]
+        bold: bool,
     },
     Image {
         path: String,
@@ -73,6 +94,11 @@ pub enum Content {
         /// Bump after overwriting an image at the same path to invalidate its cache.
         #[serde(default)]
         revision: u64,
+        /// Normalized image position within the box (also controls cover cropping).
+        #[serde(default = "center")]
+        position: [f64; 2],
+        #[serde(default)]
+        filter: Sampling,
     },
     Rect {
         #[serde(default = "accent")]
@@ -152,6 +178,14 @@ impl Element {
         {
             return Err("invalid element bounds/opacity (positive size, coordinates within 8192, opacity 0..1)".into());
         }
+        if !self.rotation.is_finite()
+            || !(-360.0..=360.0).contains(&self.rotation)
+            || !self.origin.iter().all(|n| unit(*n))
+            || !self.clip_radius.is_finite()
+            || !(0.0..=2048.0).contains(&self.clip_radius)
+        {
+            return Err("rotation must be -360..360, origin 0..1, clip_radius 0..2048".into());
+        }
         let check_color = |c: &str| color(c, Palette::DEFAULT).map(|_| ());
         let check_stroke = |n: f64| -> Result<()> {
             if !n.is_finite() || !(0.1..=128.0).contains(&n) {
@@ -175,7 +209,10 @@ impl Element {
                 }
                 check_color(color)?;
             }
-            Content::Image { path, .. } => {
+            Content::Image { path, position, .. } => {
+                if !position.iter().all(|n| unit(*n)) {
+                    return Err("image position must be 0..1".into());
+                }
                 if path.trim().is_empty() || path.len() > 4096 || path.contains('\0') {
                     return Err("invalid image path".into());
                 }
@@ -275,7 +312,13 @@ impl Canvas {
             cr.save()?;
             let [x, y, w, h] = element.bounds;
             cr.translate(x, y);
-            cr.rectangle(0.0, 0.0, w, h);
+            if element.rotation != 0.0 {
+                let [ox, oy] = element.origin;
+                cr.translate(w * ox, h * oy);
+                cr.rotate(element.rotation.to_radians());
+                cr.translate(-w * ox, -h * oy);
+            }
+            rounded(cr, w, h, element.clip_radius);
             cr.clip();
             if element.opacity < 1.0 {
                 cr.push_group();
@@ -291,10 +334,14 @@ impl Canvas {
                     color,
                     align,
                     wrap,
+                    bold,
                 } => {
                     let layout = create_layout(cr);
                     let mut font = font.clone();
                     font.set_absolute_size(size * pango::SCALE as f64);
+                    if *bold {
+                        font.set_weight(pango::Weight::Bold);
+                    }
                     layout.set_font_description(Some(&font));
                     layout.set_text(text);
                     layout.set_width((w * pango::SCALE as f64) as i32);
@@ -315,6 +362,8 @@ impl Canvas {
                     path,
                     fit,
                     revision,
+                    position,
+                    filter,
                 } => {
                     if let Some(image) = self.image(assets.join(path), *revision) {
                         let (iw, ih) = (image.width() as f64, image.height() as f64);
@@ -329,10 +378,15 @@ impl Canvas {
                                 (s, s)
                             }
                         };
-                        cr.translate((w - iw * sx) / 2.0, (h - ih * sy) / 2.0);
+                        cr.translate((w - iw * sx) * position[0], (h - ih * sy) * position[1]);
                         cr.scale(sx, sy);
                         cr.set_source_surface(&image, 0.0, 0.0)?;
                         cr.source().set_extend(cairo::Extend::Pad);
+                        cr.source().set_filter(match filter {
+                            Sampling::Nearest => cairo::Filter::Nearest,
+                            Sampling::Bilinear => cairo::Filter::Bilinear,
+                            Sampling::Best => cairo::Filter::Best,
+                        });
                         cr.rectangle(0.0, 0.0, iw, ih);
                         cr.fill()?;
                     }
@@ -418,7 +472,7 @@ fn rounded(cr: &Context, w: f64, h: f64, radius: f64) {
     }
     cr.close_path();
 }
-fn load_image(path: &Path) -> Result<ImageSurface> {
+pub(crate) fn read_image(path: &Path) -> Result<Vec<u8>> {
     use std::io::Read;
     let mut data = Vec::new();
     std::fs::File::open(path)?
@@ -427,13 +481,21 @@ fn load_image(path: &Path) -> Result<ImageSurface> {
     if data.len() > 32 * 1024 * 1024 {
         return Err("image file exceeds 32 MiB".into());
     }
+    Ok(data)
+}
+
+pub(crate) fn decode_image(data: &[u8]) -> Result<image::RgbaImage> {
     let mut reader = image::ImageReader::new(std::io::Cursor::new(data)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(4096);
     limits.max_image_height = Some(4096);
     limits.max_alloc = Some(128 * 1024 * 1024);
     reader.limits(limits);
-    let image = reader.decode()?.to_rgba8();
+    Ok(reader.decode()?.to_rgba8())
+}
+
+fn load_image(path: &Path) -> Result<ImageSurface> {
+    let image = decode_image(&read_image(path)?)?;
     let (w, h) = (image.width() as i32, image.height() as i32);
     let mut bytes = Vec::with_capacity(w as usize * h as usize * 4);
     for p in image.pixels() {

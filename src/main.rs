@@ -187,7 +187,21 @@ fn run() -> Result<()> {
     match action {
         "--help" | "-h" => {
             println!(
-                "rs-wwidget [--config PATH] [start|stop|restart|toggle|status|remove]\n  --run                       Run in the foreground (default)\n  --list-monitors             List Wayland connector names and logical sizes\n  --list-widgets              List installed widget names\n  --check-config              Validate config and exit\n  --print-default-config      Print current default palette\n  --preview OUTPUT [WALLPAPER] Render PNG without Wayland (PNG/JPEG wallpaper)\n  --preview-grid OUTPUT       Render drag grid preview\n  --benchmark                 Headless rendering CPU benchmark"
+                "rs-wwidget [--config PATH] [start|stop|restart|toggle|status|remove]\n  --run                       Run in the foreground (default)\n  --list-monitors             List Wayland connector names and logical sizes\n  --list-widgets              List installed widget names\n  --check-config              Validate config and exit\n  --print-default-config      Print current default palette\n  --preview OUTPUT [WALLPAPER] Render PNG without Wayland (PNG/JPEG wallpaper)\n  --preview-grid OUTPUT       Render drag grid preview\n  --benchmark                 Headless rendering CPU benchmark\n  --create-poster IMAGE DIR    Create a static image package (use --width, --height, --rotation, --fit, --opacity, --radius, --input, --filter)\n  --rotate-poster DIR DEGREES  Rotate a single-image poster and resize its canvas\n  --check-frame FILE          Validate v1/v2 JSON without running a widget"
+            );
+            return Ok(());
+        }
+        "--create-poster" => return rs_wwidget::poster::create(&args[1..]),
+        "--rotate-poster" if args.len() == 3 => {
+            return rs_wwidget::poster::rotate(Path::new(&args[1]), args[2].parse()?);
+        }
+        "--check-frame" if args.len() == 2 => {
+            let frame = rs_wwidget::plugin::Frame::load(Path::new(&args[1]))?;
+            println!(
+                "Frame OK: v{}, {} elements, {} rows",
+                frame.version,
+                frame.elements.len(),
+                frame.rows.len()
             );
             return Ok(());
         }

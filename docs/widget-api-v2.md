@@ -35,7 +35,8 @@ Unknown fields, invalid dimensions, and ambiguous sources are errors.
 | `restart_seconds` | 30 | Child restart delay, 1..86400 |
 | `timeout_seconds` | 60 | Child heartbeat timeout, 1..86400 |
 
-Static files load once during configuration validation. They do not spawn a
+Enabled static files load once during configuration validation; disabled legacy
+static definitions do not read their frame files. They do not spawn a
 process, use a poll fd, require heartbeats, or trigger periodic redraws. The
 host's normal event loop still runs. Restart after changing a manifest, static
 frame, or static image. Disabled packages are not resolved. Relative frame and
@@ -82,7 +83,8 @@ Wayland bottom layer, without keyboard focus or reserved layout space.
 `title` (up to 128 characters) and v1 `rows` are optional in v2. Decoration and
 rows render first, then elements in array order: later elements cover earlier
 ones. v1 still requires `title` and `rows` and rejects `elements`. Every element
-clips to its `bounds`, and the whole frame clips to its panel. Empty frames
+clips in its own local image box after applying its transform; the whole frame
+clips to the panel. Rotated content can extend beyond the unrotated `bounds`. Empty frames
 clear the canvas. Frames are full replacements, not patches. Rows use the legacy
 300px layout scaled horizontally for a custom panel width; canvas coordinates
 remain unscaled logical pixels. Prefer canvas text for custom typography.
@@ -91,6 +93,25 @@ remain unscaled logical pixels. Prefer canvas text for custom typography.
 with absolute values at most 8192, and width/height must be positive.
 `opacity` defaults to 1, accepts 0..1 and applies to the entire element.
 
+Common element transforms (optional, backward compatible):
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `rotation` | 0 | Clockwise degrees, -360..360; negative is counterclockwise |
+| `origin` | `[0.5, 0.5]` | Rotation pivot within the unrotated box, two normalized values in 0..1 |
+| `clip_radius` | 0 | Local rounded clipping radius, 0..2048; clamped to half the box's smaller side |
+
+The host translates to the box, rotates about its origin, then clips/draws in
+local coordinates. The complete element, including its clip, rotates as one
+unit. Opacity applies after composition. The rectangular Wayland surface does
+not auto-grow for a canvas transform; leave space for the rotated corners.
+The native poster commands calculate and update that space automatically.
+
+```json
+{"bounds":[24,24,160,240],"rotation":-10,"origin":[0.5,0.5],"clip_radius":12,
+ "content":{"type":"image","path":"cover.png","fit":"cover","filter":"best"}}
+```
+
 Colors accept `#RRGGBB`, `#RRGGBBAA`, `transparent`, or a theme token:
 `background`, `foreground`, `muted`, `accent`, `green`, `border`,
 `bar_background`, `grid_background`. Color alpha multiplies element opacity.
@@ -98,15 +119,18 @@ Text is literal, without markup, in the host's configured font family.
 
 | `content.type` | Required fields | Optional fields (defaults) |
 | --- | --- | --- |
-| `image` | `path` | `fit`: `contain`, `cover`, `stretch` (default `contain`); `revision`: unsigned integer (0) |
-| `text` | `text` | `size`: 1..512 (16), `color` (`foreground`), `align`: `left`/`center`/`right` (`left`), `wrap` (false) |
+| `image` | `path` | `fit`: `contain`, `cover`, `stretch` (default `contain`); `revision`: unsigned integer (0); `position`: normalized `[x,y]` (`[0.5,0.5]`); `filter`: `nearest`/`bilinear`/`best` (`bilinear`) |
+| `text` | `text` | `size`: 1..512 (16), `color` (`foreground`), `align`: `left`/`center`/`right` (`left`), `wrap` (false), `bold` (false) |
 | `rect` | — | `color` (`accent`), `radius`: 0..2048 (0) |
 | `line` | — | `color` (`accent`), `thickness`: 0.1..128 (1) |
 | `bar` | `value`: 0..1 | `color` (`accent`), `background` (`bar_background`), `radius`: 0..2048 (0) |
 | `graph` | `values`: 1..512 values in 0..1, oldest first | `color` (`accent`), `fill` (false), `thickness`: 0.1..128 (1) |
 
 `contain` centers the full image with transparent margins; `cover` fills and
-crops centrally; `stretch` fills the box. PNG transparency is preserved with
+crops; `stretch` fills the box. Image `position` sets alignment/cropping: `[0,0]`
+aligns left/top, `[1,1]` right/bottom, `[0.5,0.5]` centers. `filter = "nearest"`
+preserves hard pixel-art edges; `bilinear` interpolates; `best` requests Cairo's
+highest-quality sampling. PNG transparency is preserved with
 premultiplied alpha. JPEG is supported. Images are local still images only;
 no URL fetches, SVG, animation or video. A line runs from the bottom-left to
 the top-right of its box. For a horizontal separator, use a thin rectangle.
@@ -118,7 +142,8 @@ a stroke. Text ellipsizes when it exceeds its box; `wrap` enables word wrapping.
 Each frame is at most 65,536 UTF-8 bytes and 256 elements. Each text element
 has at most 4096 characters. v1 row limits remain unchanged. Unknown types,
 fields, invalid enums, nonfinite numbers and values outside bounds reject the
-frame and use the normal plugin failure/restart path. Bad static JSON is a
+frame and use the normal plugin failure/restart path. Duplicate JSON fields
+are rejected, and element validation errors include their zero-based index. Bad static JSON is a
 configuration error. A missing or invalid image logs an error and leaves that
 element transparent, while other elements still draw.
 
@@ -134,6 +159,15 @@ Cache eviction can cause a later redraw to load the file again.
 
 The standard-library-only SDK keeps `Row`/`emit` for v1 and adds `Image`, `Text`,
 `Rect`, `Line`, `Bar`, `Graph`, `encode_canvas`, and `emit_canvas`.
+Each helper accepts `rotation`, `origin`, `clip_radius` and `opacity`. Image
+also accepts `position` and `filter`; text accepts `bold`. For example:
+
+```python
+Image("cover.png", (32, 32, 160, 240), rotation=-10, clip_radius=12,
+      position=(0.5, 0), fit="cover", filter="best")
+Text("Heading", (220, 32, 200, 40), size=28, bold=True)
+```
+
 
 ```python
 import os
@@ -174,4 +208,20 @@ placeholders and never execute during preview. Native host rendering, logical
 sizes, drag constraints, overlay damage and saved positions all use each panel's
 width and height. Existing built-in rendering and v1 defaults stay the same.
 
-For a ready-to-use static picture, see [poster](../widgets/poster/README.md).
+`--check-frame FILE` validates a standalone v1/v2 JSON file without requiring a
+main configuration or Wayland connection. For editor completion/validation, use
+[`sdk/schema/frame-v2.schema.json`](../sdk/schema/frame-v2.schema.json), a JSON
+Schema Draft 2020-12 schema. For example, in VS Code's workspace settings:
+
+```json
+{"json.schemas":[{"fileMatch":["**/frame.json"],"url":"./sdk/schema/frame-v2.schema.json"}]}
+```
+
+The schema covers structural and numeric constraints. Encoded frame/image byte
+limits and UTF-8 byte length limits for image paths remain host checks. Schema
+validation is optional and adds no production dependencies. Its tests run when
+`jsonschema` is available (`python3 -m pip install jsonschema` in a dev venv).
+Do not put a `$schema` property into a protocol frame; unknown fields are rejected.
+
+For native image-package creation and rotation, see
+[poster](../widgets/poster/README.md).

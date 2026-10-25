@@ -131,7 +131,12 @@ Enabled plugins pay for their own process and panel buffers. Host RSS/PSS in
 Panels support text, label/value rows, progress bars and small history graphs.
 [API v2](docs/widget-api-v2.md) adds free-layout text, PNG/JPEG images, rounded
 rectangles, lines, bars and graphs, custom sizes, decoration/input modes and
-static JSON packages without child processes. See the [poster setup](widgets/poster/README.md).
+static JSON packages without child processes. Elements support rotation about a
+custom pivot, rounded clipping, image positioning/sampling, and bold text.
+Create a complete image package with `--create-poster IMAGE PACKAGE_DIR --rotation -12`,
+change its angle with `--rotate-poster PACKAGE_DIR 25`, and validate standalone
+JSON with `--check-frame FILE`. See the [poster setup](widgets/poster/README.md)
+and [editor schema](sdk/schema/frame-v2.schema.json).
 The host handles themes, scaling, dragging and saved positions by plugin ID.
 Slow or broken plugins are stopped and retried without blocking the event loop.
 Config checking, monitor listing, previews and benchmarks never launch plugins;

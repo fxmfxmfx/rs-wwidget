@@ -1,6 +1,6 @@
 //! Single-threaded host runtime for newline-delimited plugin frames.
 use crate::config::PluginConfig;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     io,
     os::fd::{AsRawFd, RawFd},
@@ -12,7 +12,7 @@ use std::{
 const MAX_FRAME: usize = 65_536;
 const READ_BUDGET: usize = 65_536;
 
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Frame {
     pub version: u32,
@@ -24,7 +24,7 @@ pub struct Frame {
     pub elements: Vec<crate::canvas::Element>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq)]
 #[serde(default, deny_unknown_fields)]
 pub struct Row {
     pub label: String,
@@ -33,27 +33,56 @@ pub struct Row {
     pub history: Vec<f64>,
 }
 
+// Presence is distinct from null: v1 requires title/rows, and optional v2 fields
+// still reject null. Deserialize directly so duplicate fields cannot be hidden.
+#[derive(Default)]
+struct Field<T>(Option<T>);
+impl<'de, T: Deserialize<'de>> Deserialize<'de> for Field<T> {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        Ok(Self(Some(T::deserialize(deserializer)?)))
+    }
+}
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireFrame {
+    version: u32,
+    #[serde(default)]
+    title: Field<String>,
+    #[serde(default)]
+    rows: Field<Vec<Row>>,
+    #[serde(default)]
+    elements: Field<Vec<crate::canvas::Element>>,
+}
+
 impl Frame {
     pub fn parse(data: &[u8]) -> crate::Result<Self> {
         if data.len() > MAX_FRAME {
             return Err("plugin frame exceeds 65536 bytes".into());
         }
-        let value: serde_json::Value = serde_json::from_slice(data)?;
-        let v1_fields = value.get("title").is_some()
-            && value.get("rows").is_some()
-            && value.get("elements").is_none();
-        let frame: Self = serde_json::from_value(value)?;
-        if ![1, 2].contains(&frame.version) {
+        let raw: WireFrame = serde_json::from_slice(data)?;
+        if ![1, 2].contains(&raw.version) {
             return Err("plugin frame version must be 1 or 2".into());
         }
-        if frame.version == 1 && !v1_fields {
+        if raw.version == 1
+            && (raw.title.0.is_none() || raw.rows.0.is_none() || raw.elements.0.is_some())
+        {
             return Err("v1 requires title and rows; elements require v2".into());
         }
+        let frame = Self {
+            version: raw.version,
+            title: raw.title.0.unwrap_or_default(),
+            rows: raw.rows.0.unwrap_or_default(),
+            elements: raw.elements.0.unwrap_or_default(),
+        };
         if frame.elements.len() > 256 {
             return Err("at most 256 elements per frame".into());
         }
-        for element in &frame.elements {
-            element.validate()?;
+        for (index, element) in frame.elements.iter().enumerate() {
+            element
+                .validate()
+                .map_err(|e| format!("element {index}: {e}"))?;
         }
         if frame.title.chars().count() > 128 {
             return Err("plugin title exceeds 128 characters".into());

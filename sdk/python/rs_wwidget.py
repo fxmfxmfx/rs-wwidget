@@ -67,6 +67,9 @@ class Element:
     bounds: tuple[float, float, float, float]
     content: dict
     opacity: float = 1.0
+    rotation: float = 0.0
+    origin: tuple[float, float] = (0.5, 0.5)
+    clip_radius: float = 0.0
 
     def to_dict(self) -> dict:
         if len(self.bounds) != 4:
@@ -77,8 +80,13 @@ class Element:
         if self.bounds[2] <= 0 or self.bounds[3] <= 0:
             raise ValueError("element width and height must be positive")
         _validate_number("opacity", self.opacity)
+        _range("rotation", self.rotation, -360, 360)
+        _pair("origin", self.origin)
+        _range("clip_radius", self.clip_radius, 0, 2048)
         _validate_content(self.content)
-        return {"bounds": list(self.bounds), "opacity": self.opacity, "content": self.content}
+        return {"bounds": list(self.bounds), "opacity": self.opacity,
+                "rotation": self.rotation, "origin": list(self.origin),
+                "clip_radius": self.clip_radius, "content": self.content}
 
 
 def _color(value: str) -> None:
@@ -96,20 +104,31 @@ def _range(name: str, n: float, lo: float, hi: float) -> None:
         raise ValueError(f"{name} must be finite and between {lo} and {hi}")
 
 
+def _pair(name: str, value) -> None:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ValueError(f"{name} must contain two normalized coordinates")
+    for n in value:
+        _validate_number(name, n)
+
+
 def _validate_content(c: dict) -> None:
     if not isinstance(c, dict):
         raise TypeError("element content must be a dict")
     kind = c.get("type")
     allowed = {
-        "text": {"type", "text", "size", "color", "align", "wrap"},
-        "image": {"type", "path", "fit", "revision"},
+        "text": {"type", "text", "size", "color", "align", "wrap", "bold"},
+        "image": {"type", "path", "fit", "revision", "position", "filter"},
         "rect": {"type", "color", "radius"},
         "line": {"type", "color", "thickness"},
         "bar": {"type", "value", "color", "background", "radius"},
         "graph": {"type", "values", "color", "fill", "thickness"},
     }
-    if kind not in allowed or set(c) - allowed[kind]:
+    if not isinstance(kind, str) or kind not in allowed or set(c) - allowed[kind]:
         raise ValueError("unknown content type or field")
+    required = {"text": {"text"}, "image": {"path"}, "bar": {"value"}, "graph": {"values"}}
+    missing = required.get(kind, set()) - set(c)
+    if missing:
+        raise ValueError(f"missing {kind} fields: {', '.join(sorted(missing))}")
     if "color" in c:
         _color(c["color"])
     if "background" in c:
@@ -123,14 +142,18 @@ def _validate_content(c: dict) -> None:
         _range("font size", c.get("size", 16), 1, 512)
         if c.get("align", "left") not in ("left", "center", "right"):
             raise ValueError("invalid text alignment")
-        if not isinstance(c.get("wrap", False), bool):
-            raise TypeError("wrap must be bool")
+        for flag in ("wrap", "bold"):
+            if not isinstance(c.get(flag, False), bool):
+                raise TypeError(f"{flag} must be bool")
     elif kind == "image":
         _validate_text("path", c["path"], 4096)
         if not c["path"].strip() or "\0" in c["path"] or len(c["path"].encode("utf-8")) > 4096:
             raise ValueError("invalid image path")
         if c.get("fit", "contain") not in ("contain", "cover", "stretch"):
             raise ValueError("invalid image fit")
+        _pair("image position", c.get("position", (0.5, 0.5)))
+        if c.get("filter", "bilinear") not in ("nearest", "bilinear", "best"):
+            raise ValueError("invalid image filter")
         revision = c.get("revision", 0)
         if isinstance(revision, bool) or not isinstance(revision, int) or not 0 <= revision <= 2**64 - 1:
             raise ValueError("revision must be an unsigned 64-bit integer")
@@ -146,29 +169,45 @@ def _validate_content(c: dict) -> None:
             raise TypeError("fill must be bool")
 
 
-def Text(text: str, bounds, *, size=16, color="foreground", align="left", wrap=False, opacity=1.0) -> Element:
-    return Element(bounds, dict(type="text", text=text, size=size, color=color, align=align, wrap=wrap), opacity)
+def Text(text: str, bounds, *, size=16, color="foreground", align="left", wrap=False,
+         bold=False, opacity=1.0, rotation=0, origin=(0.5, 0.5), clip_radius=0) -> Element:
+    return Element(bounds, dict(type="text", text=text, size=size, color=color,
+                               align=align, wrap=wrap, bold=bold),
+                   opacity, rotation, origin, clip_radius)
 
 
-def Image(path: str, bounds, *, fit="contain", revision=0, opacity=1.0) -> Element:
-    return Element(bounds, dict(type="image", path=path, fit=fit, revision=revision), opacity)
+def Image(path: str, bounds, *, fit="contain", revision=0, position=(0.5, 0.5),
+          filter="bilinear", opacity=1.0, rotation=0, origin=(0.5, 0.5), clip_radius=0) -> Element:
+    return Element(bounds, dict(type="image", path=path, fit=fit, revision=revision,
+                               position=list(position), filter=filter),
+                   opacity, rotation, origin, clip_radius)
 
 
-def Rect(bounds, *, color="accent", radius=0, opacity=1.0) -> Element:
-    return Element(bounds, dict(type="rect", color=color, radius=radius), opacity)
+def Rect(bounds, *, color="accent", radius=0, opacity=1.0, rotation=0,
+         origin=(0.5, 0.5), clip_radius=0) -> Element:
+    return Element(bounds, dict(type="rect", color=color, radius=radius),
+                   opacity, rotation, origin, clip_radius)
 
 
-def Line(bounds, *, color="accent", thickness=1, opacity=1.0) -> Element:
+def Line(bounds, *, color="accent", thickness=1, opacity=1.0, rotation=0,
+         origin=(0.5, 0.5), clip_radius=0) -> Element:
     """A line from the bottom-left to the top-right of its bounding box."""
-    return Element(bounds, dict(type="line", color=color, thickness=thickness), opacity)
+    return Element(bounds, dict(type="line", color=color, thickness=thickness),
+                   opacity, rotation, origin, clip_radius)
 
 
-def Bar(value: float, bounds, *, color="accent", background="bar_background", radius=0, opacity=1.0) -> Element:
-    return Element(bounds, dict(type="bar", value=value, color=color, background=background, radius=radius), opacity)
+def Bar(value: float, bounds, *, color="accent", background="bar_background", radius=0,
+        opacity=1.0, rotation=0, origin=(0.5, 0.5), clip_radius=0) -> Element:
+    return Element(bounds, dict(type="bar", value=value, color=color,
+                               background=background, radius=radius),
+                   opacity, rotation, origin, clip_radius)
 
 
-def Graph(values, bounds, *, color="accent", fill=False, thickness=1, opacity=1.0) -> Element:
-    return Element(bounds, dict(type="graph", values=list(values), color=color, fill=fill, thickness=thickness), opacity)
+def Graph(values, bounds, *, color="accent", fill=False, thickness=1, opacity=1.0,
+          rotation=0, origin=(0.5, 0.5), clip_radius=0) -> Element:
+    return Element(bounds, dict(type="graph", values=list(values), color=color,
+                               fill=fill, thickness=thickness),
+                   opacity, rotation, origin, clip_radius)
 
 
 def encode_canvas(elements: Iterable[Element], *, title="") -> str:

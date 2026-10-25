@@ -294,3 +294,172 @@ fn cli_preview_uses_static_frame_and_custom_size() {
     assert!(image.pixels().all(|p| p.0 == [255, 0, 0, 255]));
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn rotated_elements_use_local_clip_and_configurable_origin() {
+    let renderer = Renderer::new(Palette::DEFAULT, 1.0);
+    for scale in [1, 2] {
+        let frame = parse(json!({"version":2,"elements":[{
+            "bounds":[16,24,32,16],"rotation":90,"opacity":0.5,
+            "content":{"type":"rect","color":"#ff0000"}
+        }]}));
+        let data = pixels(&renderer, &config(), &frame, scale);
+        let get = |x, y| {
+            pixel(
+                &data,
+                (64 * scale) as usize,
+                (x * scale) as usize,
+                (y * scale) as usize,
+            )
+        };
+        // Rotation extends beyond the original 16px-high box rather than clipping to it.
+        assert_eq!(get(32, 18), 0x80800000);
+        assert_eq!(get(18, 32), 0);
+        let origin = parse(json!({"version":2,"elements":[{
+            "bounds":[16,24,32,16],"rotation":90,"origin":[0,0],
+            "content":{"type":"rect","color":"#00ff00"}
+        }]}));
+        let data = pixels(&renderer, &config(), &origin, scale);
+        assert_eq!(
+            pixel(
+                &data,
+                (64 * scale) as usize,
+                (8 * scale) as usize,
+                (40 * scale) as usize
+            ),
+            0xff00ff00
+        );
+    }
+}
+
+#[test]
+fn image_position_rounding_and_nearest_sampling() {
+    let dir = temp();
+    let mut image = image::RgbaImage::new(4, 2);
+    for (x, _, p) in image.enumerate_pixels_mut() {
+        *p = if x < 2 {
+            image::Rgba([255, 0, 0, 255])
+        } else {
+            image::Rgba([0, 0, 255, 255])
+        };
+    }
+    image.save(dir.join("crop.png")).unwrap();
+    let cfg = PluginConfig {
+        asset_dir: dir.clone(),
+        ..config()
+    };
+    let renderer = Renderer::new(Palette::DEFAULT, 1.0);
+    for (position, expected) in [(0.0, 0xffff0000), (1.0, 0xff0000ff)] {
+        let frame = parse(json!({"version":2,"elements":[{
+            "bounds":[0,0,64,64],"clip_radius":16,
+            "content":{"type":"image","path":"crop.png","fit":"cover","position":[position,0.5],"filter":"nearest"}
+        }]}));
+        let data = pixels(&renderer, &cfg, &frame, 1);
+        assert_eq!(pixel(&data, 64, 32, 32), expected);
+        assert_eq!(pixel(&data, 64, 0, 0), 0);
+    }
+    std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn malformed_transforms_and_duplicate_fields_are_rejected() {
+    for input in [
+        r#"{"version":2,"version":1,"title":"","rows":[]}"#,
+        r#"{"version":2,"title":null}"#,
+        r#"{"version":2,"elements":null}"#,
+        r#"{"version":2,"elements":[{"bounds":[0,0,64,64],"rotation":361,"content":{"type":"rect"}}]}"#,
+        r#"{"version":2,"elements":[{"bounds":[0,0,64,64],"origin":[0,2],"content":{"type":"rect"}}]}"#,
+        r#"{"version":2,"elements":[{"bounds":[0,0,64,64],"clip_radius":-1,"content":{"type":"rect"}}]}"#,
+        r#"{"version":2,"elements":[{"bounds":[0,0,64,64],"content":{"type":"image","path":"x","position":[-1,0]}}]}"#,
+        r#"{"version":2,"elements":[{"bounds":[0,0,64,64],"content":{"type":"image","path":"x","filter":"unknown"}}]}"#,
+    ] {
+        assert!(Frame::parse(input.as_bytes()).is_err(), "{input}");
+    }
+}
+
+#[test]
+fn disabled_static_legacy_definitions_do_not_read_frame_files() {
+    let text = "widgets=[]\n[[plugins]]\nid='inactive'\nframe='/nonexistent/rs-wwidget-disabled-frame.json'\n";
+    let cfg = Config::parse(text).unwrap();
+    assert!(cfg.plugins[0].static_data.is_none());
+    assert!(!cfg.panel_enabled(3));
+    assert!(Config::parse(&text.replace("widgets=[]", "widgets=['inactive']")).is_err());
+}
+
+#[test]
+fn poster_cli_creates_and_rotates_without_cropping_or_overwriting() {
+    let root = temp();
+    let widgets = root.join("widgets");
+    std::fs::create_dir(&widgets).unwrap();
+    let source = root.join("source.png");
+    let dest = widgets.join("flyer");
+    image::RgbaImage::from_pixel(80, 40, image::Rgba([255, 0, 0, 255]))
+        .save(&source)
+        .unwrap();
+    let binary = env!("CARGO_BIN_EXE_rs-wwidget");
+    let output = std::process::Command::new(binary)
+        .arg("--create-poster")
+        .arg(&source)
+        .arg(&dest)
+        .args(["--width", "80", "--rotation", "30", "--filter", "nearest"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let config_path = root.join("config.toml");
+    std::fs::write(&config_path, "widgets=['flyer']").unwrap();
+    let cfg = Config::load(&config_path, true).unwrap();
+    assert_eq!((cfg.panel_width(3), cfg.panel_height(3)), (90, 75));
+    let before = std::fs::read(dest.join("widget.toml")).unwrap();
+    let output = std::process::Command::new(binary)
+        .arg("--create-poster")
+        .arg(&source)
+        .arg(&dest)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read(dest.join("widget.toml")).unwrap(), before);
+    let output = std::process::Command::new(binary)
+        .arg("--rotate-poster")
+        .arg(&dest)
+        .arg("90")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cfg = Config::load(&config_path, true).unwrap();
+    let plugin = &cfg.plugins[0];
+    assert_eq!((plugin.width, plugin.height), (40, 80));
+    let r = Renderer::new(Palette::DEFAULT, 1.0);
+    let data = pixels(&r, plugin, plugin.static_data.as_ref().unwrap(), 1);
+    assert!(
+        data.chunks_exact(4)
+            .all(|p| u32::from_ne_bytes(p.try_into().unwrap()) == 0xffff0000)
+    );
+    let before = std::fs::read(dest.join("frame.json")).unwrap();
+    let output = std::process::Command::new(binary)
+        .arg("--rotate-poster")
+        .arg(&dest)
+        .arg("NaN")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert_eq!(std::fs::read(dest.join("frame.json")).unwrap(), before);
+    let output = std::process::Command::new(binary)
+        .arg("--check-frame")
+        .arg(dest.join("frame.json"))
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(
+        std::fs::read(dest.join("poster.png")).unwrap(),
+        std::fs::read(source).unwrap()
+    );
+    std::fs::remove_dir_all(root).unwrap();
+}
