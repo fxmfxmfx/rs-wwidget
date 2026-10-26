@@ -231,3 +231,21 @@ Do not put a `$schema` property into a protocol frame; unknown fields are reject
 
 For native image-package creation and rotation, see
 [poster](../widgets/poster/README.md).
+
+## Polylines
+
+`content.type = "polyline"` takes `points`: 2..1024 normalized `[x,y]` pairs within the element bounds. `color` defaults to accent and `thickness` to 1 logical pixel (0.1..128). Joins/caps are round. `closed` defaults to false; optional `fill` is a palette/hex color and requires a closed path with at least three points. Paths clip to the element box and support the same rotation, opacity and rounded clipping as other elements. Hit testing still uses the element box, not the painted path. The 64 KiB total frame limit applies.
+
+```python
+from rs_wwidget import Polyline
+triangle = Polyline([[0.1,0.1],[0.9,0.1],[0.5,0.9]], (20,20,120,100),
+                    closed=True, fill="green", thickness=3)
+```
+
+Render captured frames without running a provider or compositor:
+
+```sh
+rs-wwidget --render-frame frame.json preview.png 420 340
+```
+
+Image paths resolve relative to the JSON file. Output is transparent, without host card decoration; it uses the default palette/fonts. The command validates dimensions/frame before rendering.

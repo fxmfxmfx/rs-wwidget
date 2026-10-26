@@ -55,3 +55,10 @@
 
 See [README](README.md), [widget API](docs/widget-api.md),
 [bundled packages](widgets/README.md) and [architecture notes](docs/optimization.md).
+
+## Addon showcases and resource regression checks
+
+- Native Rust focus timer, bounded persistent vector sketchpad, and original rs-yambar external addon with the user’s Mango config/scripts.
+- Normalized stroked/filled polyline primitive across Rust renderer, Python SDK and editor schema. Captured-frame PNG renderer for desktop-free inspection.
+- Readiness-driven IPC, allocation-free watcher metadata refresh, and transparent-element render skipping.
+- CI comparison of two built-in widgets against main, including PSS/RSS, threads, children and idle CPU; pinned upstream rs-yambar config validation.

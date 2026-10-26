@@ -208,3 +208,14 @@ be exported with `--print-widget-schema` / `--print-frame-schema`.
 The GitHub Actions workflow runs the native, SDK, schema and protocol suite on
 Ubuntu with both Rust 1.92 and current stable. Editor schemas are in `sdk/schema/`; `jsonschema` is an optional test-only
 dependency, not a host or SDK runtime dependency.
+
+## Showcases and resource checks
+
+![Actual demo canvas frames](images/addon-showcase.png)
+
+- [Focus](../widgets/focus/README.md): native Rust countdown, clicks, keyboard and custom commands, without an interpreter.
+- [Sketchpad](../widgets/sketchpad/README.md): bounded vector paths, live drawing, undo and persistent state.
+- [rs-yambar](../widgets/rs-yambar/README.md): the original bar with the Mango dotfiles config/scripts, supervised as an optional external renderer.
+- [Resource budget](resource-budget.md): automatic two-widget comparison against main.
+
+Regenerate the actual canvas preview after building with `python3 tools/render_showcase.py`. This uses the native provider’s real first frame and the sketchpad’s drawing model, then renders their display lists with `--render-frame`; it does not need a desktop or edit the user’s state.

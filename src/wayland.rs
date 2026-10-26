@@ -1112,7 +1112,7 @@ pub fn run(config: Config, list: bool) -> Result<()> {
     app.display = app.sampler.sample();
     app.sync_outputs(&qh, true)?;
     let mut next_sample = Instant::now() + Duration::from_secs(5);
-    let mut poll_fds = Vec::new();
+    let mut poll_fds: Vec<libc::pollfd> = Vec::new();
     let result = (|| -> Result<()> {
         while app.running && !STOP.load(Ordering::Relaxed) {
             queue.dispatch_pending(&mut app)?;
@@ -1128,12 +1128,20 @@ pub fn run(config: Config, list: bool) -> Result<()> {
             {
                 app.finish_drag(false);
             }
-            for _ in 0..16 {
-                let Some((request, peer)) = control.receive() else {
-                    break;
-                };
-                let result = request.and_then(|r| app.control(r, &qh).map_err(|e| e.to_string()));
-                control.reply(&peer, result);
+            // No IPC receive buffer initialization/syscall on ordinary redraws or
+            // metric ticks. The existing poll wakes us when a request arrives.
+            if poll_fds
+                .get(1)
+                .is_some_and(|fd| fd.revents & libc::POLLIN != 0)
+            {
+                for _ in 0..16 {
+                    let Some((request, peer)) = control.receive() else {
+                        break;
+                    };
+                    let result =
+                        request.and_then(|r| app.control(r, &qh).map_err(|e| e.to_string()));
+                    control.reply(&peer, result);
+                }
             }
             let mut reconfigured = Vec::new();
             let mut keyboard_restarted = false;

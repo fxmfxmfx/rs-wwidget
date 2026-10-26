@@ -41,3 +41,33 @@ jobs:
           cargo test --locked --test ipc -- --ignored
       - name: Render without a display server
         run: ./rs-wwidget --preview /tmp/widgets.png
+      - name: Compare two-widget resources against main
+        if: matrix.rust == '1.92.0'
+        run: |
+          git fetch --depth=1 origin main
+          git rev-parse FETCH_HEAD
+          mkdir -p target/resource-baseline-source
+          git archive FETCH_HEAD | tar -x -C target/resource-baseline-source
+          cargo build --release --locked --bin rs-wwidget --manifest-path target/resource-baseline-source/Cargo.toml --target-dir target/resource-baseline
+          python3 tools/resource_probe.py --baseline target/resource-baseline/release/rs-wwidget --candidate ./rs-wwidget --output /tmp/resource-report.json
+          { echo '### Two built-in widgets vs main'; echo '```json'; cat /tmp/resource-report.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+  yambar:
+    name: Original rs-yambar config compatibility
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: fxmfxmfx/rs-yambar
+          ref: ba4015500d4fc3965ffb4e6bf07f973f43ef942e
+          path: .upstream-rs-yambar
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y pkg-config libcairo2-dev libpango1.0-dev libxkbcommon-dev libwayland-dev
+      - run: rustup toolchain install 1.92.0 --profile minimal && rustup default 1.92.0
+      - run: cargo build --release --locked --manifest-path .upstream-rs-yambar/Cargo.toml
+      - run: python3 -m unittest test_yambar_addon -v
+        env:
+          RS_YAMBAR_TEST_BINARY: ${{ github.workspace }}/.upstream-rs-yambar/target/release/rs-yambar

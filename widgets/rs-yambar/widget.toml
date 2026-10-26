@@ -1,0 +1,5 @@
+version = 2
+id = "rs-yambar"
+render_mode = "external"
+input = "none"
+command = ["sh", "{widget_dir}/run.sh"]

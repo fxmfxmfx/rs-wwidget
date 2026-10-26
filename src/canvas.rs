@@ -118,6 +118,18 @@ pub enum Content {
         #[serde(default = "one")]
         thickness: f64,
     },
+    /// Normalized points within bounds; no raster allocation or image decoder.
+    Polyline {
+        points: Vec<[f64; 2]>,
+        #[serde(default = "accent")]
+        color: String,
+        #[serde(default = "one")]
+        thickness: f64,
+        #[serde(default)]
+        closed: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fill: Option<String>,
+    },
     Bar {
         value: f64,
         #[serde(default = "accent")]
@@ -271,6 +283,28 @@ impl Element {
                 check_color(color)?;
                 check_stroke(*thickness)?;
             }
+            Content::Polyline {
+                points,
+                color,
+                thickness,
+                closed,
+                fill,
+            } => {
+                if !(2..=1024).contains(&points.len()) || !points.iter().flatten().all(|n| unit(*n))
+                {
+                    return Err("polyline needs 2..1024 normalized points in 0..1".into());
+                }
+                if fill.is_some() && (!closed || points.len() < 3) {
+                    return Err(
+                        "polyline fill requires a closed path with at least 3 points".into(),
+                    );
+                }
+                check_color(color)?;
+                check_stroke(*thickness)?;
+                if let Some(fill) = fill {
+                    check_color(fill)?;
+                }
+            }
             Content::Bar {
                 value,
                 color,
@@ -358,6 +392,9 @@ impl Canvas {
         font: &pango::FontDescription,
     ) -> std::result::Result<(), cairo::Error> {
         for element in elements {
+            if element.opacity == 0.0 {
+                continue;
+            }
             cr.save()?;
             let [x, y, w, h] = element.bounds;
             cr.translate(x, y);
@@ -458,6 +495,33 @@ impl Canvas {
                     cr.set_line_width(*thickness);
                     cr.move_to(0.0, h);
                     cr.line_to(w, 0.0);
+                    cr.stroke()?;
+                }
+                Content::Polyline {
+                    points,
+                    color,
+                    thickness,
+                    closed,
+                    fill,
+                } => {
+                    cr.set_line_width(*thickness);
+                    cr.set_line_cap(cairo::LineCap::Round);
+                    cr.set_line_join(cairo::LineJoin::Round);
+                    for (index, [x, y]) in points.iter().enumerate() {
+                        if index == 0 {
+                            cr.move_to(x * w, y * h);
+                        } else {
+                            cr.line_to(x * w, y * h);
+                        }
+                    }
+                    if *closed {
+                        cr.close_path();
+                    }
+                    if let Some(fill) = fill {
+                        set(fill);
+                        cr.fill_preserve()?;
+                    }
+                    set(color);
                     cr.stroke()?;
                 }
                 Content::Bar {

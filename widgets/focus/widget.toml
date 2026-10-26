@@ -1,0 +1,9 @@
+version = 2
+id = "focus"
+protocol = 2
+command = ["{widget_dir}/../widget-provider", "focus", "--package", "{widget_dir}"]
+width = 340
+height = 270
+input = "interactive"
+keyboard = true
+drag_height = 42

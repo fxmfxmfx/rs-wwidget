@@ -1,0 +1,2 @@
+# Countdown duration, 1..86400 seconds. Reload the widget after editing.
+seconds = 1500

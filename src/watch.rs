@@ -44,9 +44,12 @@ impl WatchSet {
             return false;
         }
         self.next = now + Duration::from_millis(500);
-        let current: Vec<_> = self.paths.iter().map(stamp).collect();
-        let changed = current != self.stamps;
-        self.stamps = current;
+        let mut changed = false;
+        for (path, previous) in self.paths.iter().zip(&mut self.stamps) {
+            let current = stamp(path);
+            changed |= current != *previous;
+            *previous = current;
+        }
         changed
     }
 }

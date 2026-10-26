@@ -106,3 +106,30 @@ pub fn create(args: &[String]) -> Result<()> {
     );
     Ok(())
 }
+
+/// Render a captured provider frame, without a display or executing its command.
+pub fn render_frame(args: &[String]) -> Result<()> {
+    let [frame_path, output, width, height] = args else {
+        return Err("--render-frame FRAME.json OUTPUT.png WIDTH HEIGHT".into());
+    };
+    let frame_path = Path::new(frame_path);
+    let frame =
+        crate::plugin::Frame::parse(crate::config::read_text(frame_path, 65_536)?.as_bytes())?;
+    let config = crate::config::PluginConfig {
+        id: "frame-preview".into(),
+        command: vec!["unused".into()],
+        width: width.parse()?,
+        height: height.parse()?,
+        decoration: crate::config::Decoration::None,
+        asset_dir: frame_path.parent().unwrap_or(Path::new(".")).to_path_buf(),
+        ..Default::default()
+    };
+    config.validate()?;
+    let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, config.width, config.height)?;
+    let context = cairo::Context::new(&surface)?;
+    crate::render::Renderer::new(crate::config::Palette::DEFAULT, 1.0)
+        .widget(&context, &config, &frame)?;
+    surface.write_to_png(&mut fs::File::create(output)?)?;
+    println!("Rendered {}x{} to {output}", config.width, config.height);
+    Ok(())
+}

@@ -1,0 +1,9 @@
+version = 2
+id = "sketchpad"
+protocol = 2
+command = ["python3", "{widget_dir}/main.py"]
+width = 420
+height = 340
+input = "interactive"
+keyboard = true
+drag_height = 42

@@ -465,3 +465,71 @@ fn poster_cli_creates_and_rotates_without_cropping_or_overwriting() {
     );
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn polylines_render_closed_fills_and_strokes_with_scale_and_validation() {
+    let frame = parse(json!({"version":2,"elements":[
+        {"bounds":[0,0,64,64],"content":{"type":"polyline","points":[[0.125,0.125],[0.875,0.125],[0.5,0.875]],"closed":true,"fill":"#ff0000","color":"#00ff00","thickness":4}},
+        {"bounds":[8,40,48,16],"content":{"type":"polyline","points":[[0,0.5],[1,0.5]],"color":"#0000ff","thickness":4}}
+    ]}));
+    let renderer = Renderer::new(Palette::DEFAULT, 1.0);
+    for scale in [1, 2] {
+        let data = pixels(&renderer, &config(), &frame, scale);
+        let get = |x, y| {
+            pixel(
+                &data,
+                64 * scale as usize,
+                x * scale as usize,
+                y * scale as usize,
+            )
+        };
+        assert_eq!(get(32, 24), 0xffff0000);
+        assert_eq!(get(32, 8), 0xff00ff00);
+        assert_eq!(get(32, 48), 0xff0000ff);
+        assert_eq!(get(2, 60), 0);
+    }
+    for content in [
+        json!({"type":"polyline","points":[[0,0]]}),
+        json!({"type":"polyline","points":[[0,0],[1,2]]}),
+        json!({"type":"polyline","points":vec![[0.,0.];1025]}),
+        json!({"type":"polyline","points":[[0,0],[1,1]],"fill":"accent"}),
+        json!({"type":"polyline","points":[[0,0],[1,1]],"closed":true,"fill":"accent"}),
+    ] {
+        assert!(
+            Frame::parse(
+                &serde_json::to_vec(
+                    &json!({"version":2,"elements":[{"bounds":[0,0,64,64],"content":content}]})
+                )
+                .unwrap()
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn captured_frames_can_be_rendered_without_a_compositor_or_provider_process() {
+    let dir = temp();
+    let frame = dir.join("frame.json");
+    let output = dir.join("preview.png");
+    std::fs::write(&frame,br##"{"version":2,"elements":[{"bounds":[0,0,32,32],"content":{"type":"rect","color":"#ff0000"}}]}"##).unwrap();
+    let result = std::process::Command::new(env!("CARGO_BIN_EXE_rs-wwidget"))
+        .args([
+            "--render-frame",
+            frame.to_str().unwrap(),
+            output.to_str().unwrap(),
+            "64",
+            "64",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let image = image::open(output).unwrap().to_rgba8();
+    assert_eq!(image.get_pixel(10, 10).0, [255, 0, 0, 255]);
+    assert_eq!(image.get_pixel(50, 50).0, [0, 0, 0, 0]);
+    std::fs::remove_dir_all(dir).unwrap();
+}

@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 import unittest
-from sdk.python.rs_wwidget import Image, Text, Rect, Line, Bar, Graph, encode_canvas
+from sdk.python.rs_wwidget import Image, Text, Rect, Line, Bar, Graph, Polyline, encode_canvas
 try:
     from jsonschema import Draft202012Validator
 except ImportError:
@@ -19,7 +19,8 @@ class CanvasSchemaTests(unittest.TestCase):
         frame = json.loads(encode_canvas([
             Image('poster.png', (0,0,360,480), rotation=-15, clip_radius=12, filter='best'),
             Text('Hi', (0,0,100,32), bold=True), Rect((0,0,32,32)), Line((0,0,32,32)),
-            Bar(.5, (0,0,100,8)), Graph([0,.5,1], (0,0,100,40))]))
+            Bar(.5, (0,0,100,8)), Graph([0,.5,1], (0,0,100,40)),
+            Polyline([[0,0],[1,0],[0.5,1]], (0,0,64,64), closed=True, fill="green")]))
         self.validator.validate(frame)
         self.validator.validate(json.loads((Path(__file__).parent/'widgets/poster/frame.json').read_text()))
 
@@ -32,6 +33,10 @@ class CanvasSchemaTests(unittest.TestCase):
             {'bounds':[0,0,10,10], 'content':{'type':'image','path':'  '}},
             {'bounds':[0,0,10,10], 'content':{'type':'image','path':'x\0y'}},
             {'bounds':[0,0,10,10], 'content':{'type':'text','text':'x','typo':True}},
+            {'bounds':[0,0,10,10], 'content':{'type':'polyline','points':[[0,0]]}},
+            {'bounds':[0,0,10,10], 'content':{'type':'polyline','points':[[0,0],[1,2]]}},
+            {'bounds':[0,0,10,10], 'content':{'type':'polyline','points':[[0,0],[1,1]],'fill':'green'}},
+            {'bounds':[0,0,10,10], 'content':{'type':'polyline','points':[[0,0],[1,1]],'closed':True,'fill':'green'}},
         ]:
             with self.subTest(element=element):
                 self.assertTrue(list(self.validator.iter_errors({'version':2, 'elements':[element]})))

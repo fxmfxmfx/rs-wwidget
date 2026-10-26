@@ -74,3 +74,5 @@ run through a shell. The host substitutes `{widget_dir}` with the package's
 absolute directory. See the [package authoring and frame protocol guide](../docs/widget-api.md)
 for discovery order, manifest fields, process lifecycle, frame limits, and the
 Python SDK.
+
+New API showcases: [native focus timer](focus/README.md), [vector sketchpad](sketchpad/README.md), and [original rs-yambar integration](rs-yambar/README.md). All are optional and disabled by default.

@@ -99,7 +99,7 @@ Canvas providers receive opt-in mouse/scroll/keyboard events, stable hit targets
 file watching, state storage, live configuration and same-user IPC controls.
 External providers can use actual Quickshell/QtQuick or another surface-owning
 renderer without a host placeholder panel. Both modes are supervised and disabled
-packages do no work. See the [framework guide](docs/addon-framework.md).
+packages do no work. See the [framework guide](docs/addon-framework.md) and [resource budget](docs/resource-budget.md).
 
 ```sh
 rs-wwidget widget counter lock
@@ -117,6 +117,9 @@ widgets = ["clock", "system", "network", "temperatures", "music", "weather"]
 
 | Name | Content |
 | --- | --- |
+| `rs-yambar` | Original rs-yambar bar with the Mango dotfiles config and scripts (optional external renderer) |
+| `focus` | Native Rust interactive countdown; no interpreter or provider worker threads |
+| `sketchpad` | Persistent vector drawing, mouse/keyboard controls and custom events (Python) |
 | `qml-example` | Optional real Quickshell/QtQuick renderer with native controls and animation |
 | `playground` | Interactive buttons, slider, hover and optional keyboard (Python) |
 | `poster` | Static PNG/JPEG desktop poster, no provider process |

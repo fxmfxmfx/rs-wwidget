@@ -171,6 +171,9 @@
             },
             {
               "$ref": "#/$defs/graph"
+            },
+            {
+              "$ref": "#/$defs/polyline"
             }
           ]
         },
@@ -404,6 +407,77 @@
         "values"
       ],
       "additionalProperties": false
+    },
+    "polyline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "points"
+      ],
+      "properties": {
+        "type": {
+          "const": "polyline"
+        },
+        "points": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/pair"
+          }
+        },
+        "color": {
+          "$ref": "#/$defs/color"
+        },
+        "thickness": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 128,
+          "default": 1
+        },
+        "closed": {
+          "type": "boolean",
+          "default": false
+        },
+        "fill": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/color"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "fill"
+            ],
+            "properties": {
+              "fill": {
+                "type": "string"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "closed"
+            ],
+            "properties": {
+              "closed": {
+                "const": true
+              },
+              "points": {
+                "minItems": 3
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }

@@ -127,12 +127,13 @@ def _validate_content(c: dict) -> None:
         "image": {"type", "path", "fit", "revision", "position", "filter"},
         "rect": {"type", "color", "radius"},
         "line": {"type", "color", "thickness"},
+        "polyline": {"type", "points", "color", "thickness", "closed", "fill"},
         "bar": {"type", "value", "color", "background", "radius"},
         "graph": {"type", "values", "color", "fill", "thickness"},
     }
     if not isinstance(kind, str) or kind not in allowed or set(c) - allowed[kind]:
         raise ValueError("unknown content type or field")
-    required = {"text": {"text"}, "image": {"path"}, "bar": {"value"}, "graph": {"values"}}
+    required = {"text": {"text"}, "image": {"path"}, "bar": {"value"}, "graph": {"values"}, "polyline": {"points"}}
     missing = required.get(kind, set()) - set(c)
     if missing:
         raise ValueError(f"missing {kind} fields: {', '.join(sorted(missing))}")
@@ -170,6 +171,18 @@ def _validate_content(c: dict) -> None:
             raise ValueError("revision must be an unsigned 64-bit integer")
     elif kind == "bar":
         _validate_number("bar value", c["value"])
+    elif kind == "polyline":
+        points = c["points"]
+        if not isinstance(points, (list, tuple)) or not 2 <= len(points) <= 1024:
+            raise ValueError("polyline needs 2..1024 normalized points")
+        for point in points:
+            _pair("polyline point", point)
+        if not isinstance(c.get("closed", False), bool):
+            raise TypeError("closed must be bool")
+        if c.get("fill") is not None:
+            if not c.get("closed", False) or len(points) < 3:
+                raise ValueError("polyline fill needs a closed path with at least 3 points")
+            _color(c["fill"])
     elif kind == "graph":
         values = c["values"]
         if not 1 <= len(values) <= 512:
@@ -211,6 +224,14 @@ def Bar(value: float, bounds, *, color="accent", background="bar_background", ra
         opacity=1.0, rotation=0, origin=(0.5, 0.5), clip_radius=0, id=None) -> Element:
     return Element(bounds, dict(type="bar", value=value, color=color,
                                background=background, radius=radius),
+                   opacity, rotation, origin, clip_radius, id)
+
+
+def Polyline(points, bounds, *, color="accent", thickness=1, closed=False, fill=None,
+             opacity=1.0, rotation=0, origin=(0.5, 0.5), clip_radius=0, id=None) -> Element:
+    """A stroked path of normalized [x,y] points, optionally closed and filled."""
+    return Element(bounds, dict(type="polyline", points=[list(p) for p in points],
+                               color=color, thickness=thickness, closed=closed, fill=fill),
                    opacity, rotation, origin, clip_radius, id)
 
 

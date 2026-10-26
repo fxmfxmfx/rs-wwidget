@@ -32,6 +32,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("unexpected widget arguments".into());
     }
     match name.as_str() {
+        "focus" => widgets::focus::run(&package),
         "network" => widgets::network::run(&package),
         "temperatures" => widgets::temperatures::run(&package),
         "weather" => widgets::weather::run(&package),
