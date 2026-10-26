@@ -71,9 +71,12 @@ class RealYambarWaylandTests(unittest.TestCase):
             def _request(self,obj,iface,opcode,payload,fds):
                 name,args=self._decode(iface,opcode,payload,fds)
                 if iface=='wl_shm_pool' and name=='resize':
-                    fd,_,mapped=self.pools[obj]
-                    mapped.close()
-                    self.pools[obj]=(fd,args[0],mmap.mmap(fd,args[0],access=mmap.ACCESS_READ))
+                    # The assertion thread reads pixels under the same lock.
+                    # Publish the replacement before closing the old mapping.
+                    with self.cv:
+                        fd,_,mapped=self.pools[obj]
+                        self.pools[obj]=(fd,args[0],mmap.mmap(fd,args[0],access=mmap.ACCESS_READ))
+                        mapped.close()
                 else:
                     super()._request(obj,iface,opcode,payload,fds)
 
