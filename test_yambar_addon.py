@@ -53,3 +53,77 @@ class YambarAddonTests(unittest.TestCase):
     def test_real_upstream_renderer_validates_the_ported_config(self):
         result=subprocess.run([os.environ['RS_YAMBAR_TEST_BINARY'],'--validate','-c',str(PACKAGE/'config.toml')],capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
+
+
+@unittest.skipUnless(os.environ.get('RS_YAMBAR_TEST_BINARY'),'optional upstream source build')
+class RealYambarWaylandTests(unittest.TestCase):
+    def test_original_bar_renders_28px_surface_and_workspace_click_runs_local_script(self):
+        import mmap
+        import signal
+        import time
+        from test_wayland_handoff import FakeWayland
+
+        class BarServer(FakeWayland):
+            def _configure(self, layer_id, held):
+                self.configured_layers.add(layer_id)
+                self._send(layer_id,'zwlr_layer_surface_v1','configure',(layer_id+1000,1920,28))
+
+            def _request(self,obj,iface,opcode,payload,fds):
+                name,args=self._decode(iface,opcode,payload,fds)
+                if iface=='wl_shm_pool' and name=='resize':
+                    fd,_,mapped=self.pools[obj]
+                    mapped.close()
+                    self.pools[obj]=(fd,args[0],mmap.mmap(fd,args[0],access=mmap.ACCESS_READ))
+                else:
+                    super()._request(obj,iface,opcode,payload,fds)
+
+        with tempfile.TemporaryDirectory(prefix='yambar-wayland-') as folder:
+            root=Path(folder);runtime=root/'runtime';runtime.mkdir(mode=0o700)
+            home=root/'home';home.mkdir();bin_dir=root/'bin';bin_dir.mkdir();marker=root/'click'
+            mmsg=bin_dir/'mmsg'
+            mmsg.write_text(f'#!{sys.executable}\nimport json,os,sys,time\nfrom pathlib import Path\n'
+                'args=sys.argv[1:]\n'
+                'if args and args[0]=="dispatch":\n'
+                ' Path(os.environ["TEST_CLICK"]).write_text(json.dumps(args));sys.exit(0)\n'
+                'if "keyboardlayout" in args:print("{\\"layout\\":\\"English (US)\\"}");sys.exit(0)\n'
+                'if "tags" in args:\n'
+                ' print(json.dumps({"tags":[{"tag_index":i,"is_active":i==1,"client_count":1 if i<4 else 0} for i in range(1,9)]}),flush=True)\n'
+                ' if args[0]=="watch":time.sleep(30)\n'
+                'else:print("{}")\n')
+            mmsg.chmod(0o755)
+            wpctl=bin_dir/'wpctl';wpctl.write_text('#!/bin/sh\nprintf "Volume: 0.50\\n"\n');wpctl.chmod(0o755)
+            env={**os.environ,'HOME':str(home),'XDG_RUNTIME_DIR':str(runtime),'XDG_CONFIG_HOME':str(home/'config'),
+                 'XDG_STATE_HOME':str(home/'state'),'XDG_CACHE_HOME':str(home/'cache'),'WAYLAND_DISPLAY':'wayland-0',
+                 'RS_YAMBAR_BINARY':os.environ['RS_YAMBAR_TEST_BINARY'],'RS_WWIDGET_ASSET_DIR':str(PACKAGE),
+                 'RS_YAMBAR_CONFIG':str(PACKAGE/'config.toml'),'TEST_CLICK':str(marker),
+                 'PATH':str(bin_dir)+os.pathsep+os.environ['PATH']}
+            server=BarServer(runtime).start()
+            process=subprocess.Popen(['sh',str(PACKAGE/'run.sh')],env=env,stdout=subprocess.DEVNULL,stderr=subprocess.PIPE,start_new_session=True)
+            try:
+                server.wait_for(lambda:server.pointer_id is not None and any(c['visible'] for c in server.commits),'original bar did not render')
+                with server.cv:
+                    entry=server.commits[-1]
+                    pool,offset,width,height,stride=server.buffers[entry['buffer']]
+                    self.assertEqual((width,height),(1920,28))
+                    self.assertEqual(bytes(server.pools[pool][2][offset:offset+4]),bytes([0x28,0x28,0x28,255]))
+                    surface=server.layers[next(iter(server.layers))]['surface']
+                    server._send(server.pointer_id,'wl_pointer','enter',(500,surface,60*256,14*256))
+                    server._send(server.pointer_id,'wl_pointer','frame',())
+                deadline=time.monotonic()+5
+                while not marker.exists() and time.monotonic()<deadline:
+                    with server.cv:
+                        server._send(server.pointer_id,'wl_pointer','button',(501,1,272,1))
+                        server._send(server.pointer_id,'wl_pointer','frame',())
+                        server._send(server.pointer_id,'wl_pointer','button',(502,2,272,0))
+                        server._send(server.pointer_id,'wl_pointer','frame',())
+                    time.sleep(.1)
+                self.assertTrue(marker.exists(),'workspace click did not reach the bundled view-tag.sh')
+                self.assertEqual(json.loads(marker.read_text()),['dispatch','viewcrossmon,3,DP-1'])
+            finally:
+                try:os.killpg(process.pid,signal.SIGTERM)
+                except ProcessLookupError:pass
+                try:process.wait(timeout=3)
+                except subprocess.TimeoutExpired:os.killpg(process.pid,signal.SIGKILL);process.wait()
+                stderr=process.stderr.read().decode(errors='replace')
+                process.stderr.close();server.close()
+                if process.returncode not in (0,-signal.SIGTERM):self.fail(stderr)

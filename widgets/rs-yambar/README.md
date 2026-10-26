@@ -72,5 +72,7 @@ python3 -m unittest test_yambar_addon -v
 
 Tests check launcher process replacement, paths containing spaces, the Mango
 workspace command and keyboard script with a fake `mmsg`. A separate CI job
-builds the pinned original rs-yambar and validates the actual bundled config.
+builds the pinned original rs-yambar, validates the actual bundled config, then
+runs it against a tiny Wayland server. It checks the 1920x28 SHM surface and
+a real workspace click through the bundled script, with fake Mango/audio tools.
 This does not prove real Mango/PipeWire/display behavior on every compositor.
