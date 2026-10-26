@@ -163,6 +163,7 @@ impl App {
                             self.overrides = old;
                             return Err(error);
                         }
+                        self.release_panel_input(panel);
                         self.surfaces.retain(|s| s.panel != Some(panel));
                         if self.config.panel_enabled(panel) {
                             self.create_surface(Some(panel), qh);
@@ -211,6 +212,7 @@ impl App {
                             return Err(error);
                         }
                         // Recreate just this surface to update its input region.
+                        self.release_panel_input(panel);
                         self.surfaces.retain(|s| s.panel != Some(panel));
                         if self.config.panel_enabled(panel) {
                             self.create_surface(Some(panel), qh);
@@ -230,6 +232,7 @@ impl App {
                             self.overrides = old;
                             return Err(error);
                         }
+                        self.release_panel_input(panel);
                         self.surfaces.retain(|s| s.panel != Some(panel));
                         if visible && self.config.panel_enabled(panel) {
                             self.create_surface(Some(panel), qh);

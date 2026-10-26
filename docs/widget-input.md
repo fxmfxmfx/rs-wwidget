@@ -152,3 +152,5 @@ For live lock/show/move/reload/configure commands, custom IPC events, file watch
 state storage and non-canvas/native renderer packages, see the
 [framework guide](addon-framework.md). A custom event is
 `{"version":2,"type":"custom","name":"reset","data":{}}`.
+
+Before hiding, pinning/resetting or otherwise replacing a focused surface, the host sends pointer `leave` and keyboard focus-loss events to the still-running provider. Providers should cancel held controls/gestures on these events. This does not depend on the compositor sending a late event for the destroyed surface.

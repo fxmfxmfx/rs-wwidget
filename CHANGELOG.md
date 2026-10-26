@@ -62,3 +62,5 @@ See [README](README.md), [widget API](docs/widget-api.md),
 - Normalized stroked/filled polyline primitive across Rust renderer, Python SDK and editor schema. Captured-frame PNG renderer for desktop-free inspection.
 - Readiness-driven IPC, allocation-free watcher metadata refresh, and transparent-element render skipping.
 - CI comparison of two built-in widgets against main, including PSS/RSS, threads, children and idle CPU; pinned upstream rs-yambar config validation.
+
+- Cancel pointer/keyboard focus before replacing a live provider’s surface, preventing held gestures from surviving hide/pin/output changes.

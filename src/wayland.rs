@@ -417,9 +417,16 @@ impl App {
             return Ok(());
         }
         self.finish_drag(false);
+        if let Some(panel) = self.surface_panel(self.focus) {
+            self.release_panel_input(panel);
+        }
+        if let Some(panel) = self.surface_panel(self.keyboard_focus) {
+            self.release_panel_input(panel);
+        }
         self.surfaces.clear();
         self.retiring_overlay = None;
         self.focus = None;
+        self.keyboard_focus = None;
         self.geometry = geometry;
         self.selected = Some(chosen);
         if initial {
@@ -520,6 +527,25 @@ impl App {
     fn keyboard_panel(&self) -> Option<usize> {
         self.surface_panel(self.keyboard_focus)
             .filter(|i| *i >= 3 && self.config.plugins[*i - 3].keyboard)
+    }
+
+    /// A provider can outlive its surface (hide/lock/monitor changes). Tell it
+    /// about lost input before destroying the surface, while IDs still resolve.
+    fn release_panel_input(&mut self, panel: usize) {
+        if self.surface_panel(self.focus) == Some(panel) {
+            self.pointer_event(PointerKind::Leave, None, None);
+            self.focus = None;
+        }
+        if self.surface_panel(self.keyboard_focus) == Some(panel) {
+            self.input_event(
+                panel,
+                InputEvent::KeyboardFocus {
+                    focused: false,
+                    keys: Vec::new(),
+                },
+            );
+            self.keyboard_focus = None;
+        }
     }
 
     fn input_event(&mut self, panel: usize, event: InputEvent) {
@@ -979,6 +1005,14 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, SurfaceId> for App {
                 {
                     s.finish_drag(false);
                 } else {
+                    if let Some(panel) = s
+                        .surfaces
+                        .iter()
+                        .find(|surface| surface.id == *id)
+                        .and_then(|surface| surface.panel)
+                    {
+                        s.release_panel_input(panel);
+                    }
                     s.outputs_changed = true;
                     s.surfaces.retain(|surface| surface.id != *id);
                 }
@@ -1167,17 +1201,12 @@ pub fn run(config: Config, list: bool) -> Result<()> {
                 app.finish_drag(false);
                 app.renderer.clear_images();
                 for (panel, config) in &reconfigured {
+                    app.release_panel_input(*panel);
                     app.config.plugins[*panel - 3] = config.clone();
                 }
                 app.layout
                     .update_sizes(&app.config, app.geometry.0, app.geometry.1);
                 for (panel, _) in reconfigured {
-                    if app.surface_panel(app.focus) == Some(panel) {
-                        app.focus = None;
-                    }
-                    if app.surface_panel(app.keyboard_focus) == Some(panel) {
-                        app.keyboard_focus = None;
-                    }
                     app.surfaces.retain(|s| s.panel != Some(panel));
                     if app.config.panel_enabled(panel) {
                         app.create_surface(Some(panel), &qh);

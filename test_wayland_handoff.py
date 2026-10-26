@@ -537,13 +537,13 @@ class KeyboardRoutingTests(unittest.TestCase):
             root=Path(folder);runtime=root/'runtime';runtime.mkdir(mode=0o700)
             home=root/'home';home.mkdir();marker=root/'pressed';lost=root/'lost-focus'
             script=root/'provider.py'
-            script.write_text('import json,sys\nfrom pathlib import Path\nseen=[]\n'
+            script.write_text('import json,sys\nfrom pathlib import Path\nseen=[]\ndef save(path,value):\n p=Path(path);tmp=p.with_suffix(".tmp");tmp.write_text(json.dumps(value));tmp.replace(p)\n'
                 'for line in sys.stdin:\n'
-                ' e=json.loads(line);seen.append(e["type"])\n'
+                ' e=json.loads(line);seen.append(e.get("kind", e["type"]))\n'
                 ' if e["type"]=="key" and e["pressed"]:\n'
-                f'  Path({str(marker)!r}).write_text(json.dumps({{"key":e["key"],"seen":seen}}))\n'
+                f'  save({str(marker)!r},{{"key":e["key"],"seen":seen}})\n'
                 ' if e["type"]=="keyboard_focus" and not e["focused"]:\n'
-                f'  Path({str(lost)!r}).write_text("lost")\n'
+                f'  save({str(lost)!r},seen)\n'
                 ' print(json.dumps({"version":2,"title":str(len(seen))}),flush=True)\n')
             cfg=root/'config.toml'
             cfg.write_text('widgets=[]\n[[plugins]]\nid="keys-test"\nenabled=true\nprotocol=2\ninput="interactive"\nkeyboard=true\n'
@@ -575,6 +575,21 @@ class KeyboardRoutingTests(unittest.TestCase):
                     server._send(server.keyboard_id,'wl_keyboard','key',(603,124,58,1));server.cv.notify_all()
                 time.sleep(.1)
                 self.assertEqual(json.loads(marker.read_text())['key'],57)
+                # Host controls recreate/destroy surfaces while the script stays
+                # alive. Input cancellation must not depend on a compositor Leave.
+                lost.unlink()
+                with server.cv:
+                    server._send(server.pointer_id,'wl_pointer','enter',(604,server.source_id,40*256,60*256))
+                    server._send(server.keyboard_id,'wl_keyboard','enter',(605,server.source_id,b''))
+                    server._send(server.keyboard_id,'wl_keyboard','key',(606,125,59,1))
+                    server.cv.notify_all()
+                server.wait_for(lambda: json.loads(marker.read_text())['key']==59,'refocus did not reach provider')
+                result=subprocess.run([str(binary),'widget','keys-test','hide'],env=env,capture_output=True,text=True,timeout=5)
+                self.assertEqual(result.returncode,0,result.stderr)
+                deadline=time.monotonic()+5
+                while not lost.exists() and time.monotonic()<deadline:time.sleep(.01)
+                self.assertTrue(lost.exists(),'hide did not cancel keyboard focus')
+                self.assertIn('leave',json.loads(lost.read_text()),'hide did not cancel pointer input')
             finally:
                 process.terminate()
                 try: process.wait(timeout=2)
